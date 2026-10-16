@@ -3,7 +3,7 @@
 // Table cells shared by the People page and the People tab of a list.
 import Link from "next/link";
 import { DecisionMakerStar, EmailLine } from "@/components/CompanyDrawer";
-import { SeniorityBadge } from "@/components/ui";
+import { SeniorityBadge, SizeBadge } from "@/components/ui";
 import type { CompanyBrief, Person } from "@/lib/api";
 
 const EMAIL_SOURCE_LABEL: Record<string, string> = {
@@ -59,9 +59,20 @@ export function CompanyCell({ company: c, showPhone = true }: { company: Company
   if (!c) return <Missing />;
   return (
     <div className="min-w-44 space-y-0.5">
-      <Link href={companyHref(c.id)} className="font-medium hover:text-[var(--accent)] hover:underline" title="Open company details">
-        {c.name}
-      </Link>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Link href={companyHref(c.id)} className="font-medium hover:text-[var(--accent)] hover:underline" title="Open company details">
+          {c.name}
+        </Link>
+        {c.size_band && (
+          <SizeBadge
+            band={c.size_band}
+            employees={c.employees}
+            source={c.employees_source}
+            confidence={c.size_confidence}
+            reasons={c.size_reasons}
+          />
+        )}
+      </div>
       <div className="flex flex-wrap gap-x-2 text-xs text-[var(--muted)]">
         {c.category && <span className="capitalize">{c.category}</span>}
         {c.city && <span>{c.city}</span>}

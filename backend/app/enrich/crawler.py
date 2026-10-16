@@ -80,7 +80,9 @@ class WebsiteData:
     socials: dict[str, str] = field(default_factory=dict)
     people: list[PersonFound] = field(default_factory=list)
     # https, platform, copyright_year, has_contact_form, title, description,
-    # pages_crawled, final_url, status_code
+    # pages_crawled, final_url, status_code, and the size hints: employees_stated,
+    # employees_from, employees_snippet, founded_year, founded_snippet, locations_stated,
+    # has_careers, careers_url
     signals: dict = field(default_factory=dict)
 
 
@@ -449,7 +451,38 @@ def _empty_signals() -> dict:
     # https is None = "unknown": a site we could not reach must not be shown as "No SSL".
     return {"https": None, "platform": None, "copyright_year": None, "has_contact_form": False,
             "title": None, "description": None, "pages_crawled": 0, "final_url": None,
-            "status_code": None}
+            "status_code": None,
+            # Size hints the site states about itself (see extract._size_signals_from)
+            "employees_stated": None, "employees_from": None, "employees_snippet": None,
+            "founded_year": None, "founded_snippet": None, "locations_stated": None,
+            "has_careers": False, "careers_url": None}
+
+
+def _merge_size_signals(signals: dict, page_signals: list[dict]) -> None:
+    """Combine the size hints of all pages (homepage first, then sub-pages in crawl order).
+    Headcount: the first one stated in the text; JSON-LD only when no page text states
+    one (JSON-LD is often copied from a template). Founded year: the first one found.
+    Locations: the largest number. Careers: any page with a careers link (first URL)."""
+    for key in ("employees_stated", "employees_from", "employees_snippet", "founded_year",
+                "founded_snippet", "locations_stated", "careers_url"):
+        signals[key] = None
+    signals["has_careers"] = False
+    for source in ("text", "jsonld"):
+        page = next((p for p in page_signals
+                     if p.get("employees_stated") and p.get("employees_from") == source), None)
+        if page:
+            for key in ("employees_stated", "employees_from", "employees_snippet"):
+                signals[key] = page.get(key)
+            break
+    page = next((p for p in page_signals if p.get("founded_year")), None)
+    if page:
+        signals["founded_year"], signals["founded_snippet"] = page["founded_year"], page.get("founded_snippet")
+    signals["locations_stated"] = max((p["locations_stated"] for p in page_signals if p.get("locations_stated")),
+                                      default=None)
+    for page in page_signals:
+        if page.get("has_careers"):
+            signals["has_careers"] = True
+            signals["careers_url"] = signals["careers_url"] or page.get("careers_url")
 
 
 def _failure(error: str, fetched: _Fetched | None = None) -> WebsiteData:
@@ -583,6 +616,7 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
                 signals[key] = info.signals[key]
         if info.signals.get("has_contact_form"):
             signals["has_contact_form"] = True
+    _merge_size_signals(signals, [info.signals for _page_url, info in pages])
     signals.update({
         "https": home.url.startswith("https://"),
         "pages_crawled": len(pages),

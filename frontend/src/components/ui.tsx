@@ -2,13 +2,19 @@
 
 // Small building blocks shared by every page (companies table, people, lists).
 import {
+  bandFor,
   LEAD_STATUS_LABEL,
   LEAD_STATUSES,
+  NO_SIZE_INFO_REASON,
   SENIORITY_LABEL,
+  SIZE_BAND_LABEL,
   type EmailStatus,
+  type EmployeesSource,
   type LeadStatus,
   type PhoneType,
   type Seniority,
+  type SizeBand,
+  type SizeConfidence,
 } from "@/lib/api";
 
 const EMAIL_STATUS: Record<EmailStatus, { label: string; cls: string; hint: string }> = {
@@ -94,6 +100,47 @@ export function ScoreBadge({ score, reasons }: { score: number | null | undefine
       aria-label={`Lead score ${score} out of 100`}
     >
       {score}
+    </span>
+  );
+}
+
+const SIZE_SHORT: Record<SizeBand, string> = { solo: "Solo", small: "Small", medium: "Medium", large: "Large" };
+
+/** Company size as a pill, e.g. "Small · 8" ("8+" = at least 8 people listed on the website).
+ * Hover shows why we think so. A guess we are not sure about is greyed out and starts with "~". */
+export function SizeBadge({
+  band,
+  employees,
+  source,
+  confidence,
+  reasons,
+}: {
+  band: SizeBand | null | undefined;
+  employees?: number | null;
+  source?: EmployeesSource | null;
+  confidence?: SizeConfidence | null;
+  reasons?: string[];
+}) {
+  if (!band) return <span className="text-xs text-[var(--muted)]">—</span>;
+  // Show the headcount only when it fits the band. If other clues moved the band
+  // (say "Medium" but the website says 5 people), "Medium · 5" would look like a bug,
+  // so we show the band alone and the hover text explains why.
+  // "Solo · 1" says the same thing twice, so solo shows no number.
+  const showCount = employees && band !== "solo" && bandFor(employees) === band;
+  const count = showCount ? ` · ${employees}${source === "team_page" ? "+" : ""}` : "";
+  const roughGuess = confidence === "low";
+  const hint = [
+    SIZE_BAND_LABEL[band],
+    ...(reasons ?? []).filter((r) => r !== NO_SIZE_INFO_REASON),
+    confidence ? `Confidence: ${confidence}` : null,
+  ].filter(Boolean);
+  return (
+    <span className={`badge ${roughGuess ? "badge-muted" : "badge-accent"} tabular-nums`} title={hint.join("\n")}>
+      {/* "~" = roughly. Colour alone is not enough for colour-blind and screen-reader users. */}
+      {roughGuess && <span aria-hidden>~</span>}
+      {SIZE_SHORT[band] ?? band}
+      {count}
+      {roughGuess && <span className="sr-only"> (rough guess)</span>}
     </span>
   );
 }

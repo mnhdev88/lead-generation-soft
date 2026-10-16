@@ -28,7 +28,9 @@ def test_company_table_keeps_old_csv_columns_first():
     assert headers[: len(old)] == old
     assert headers[len(old):] == ["email_status", "lead_status", "score", "score_reasons",
                                   "decision_maker", "decision_maker_title", "decision_maker_email",
-                                  "phone_type"]
+                                  "phone_type",
+                                  "size_band", "employees", "employees_source", "founded_year", "locations",
+                                  "hiring", "ppp_jobs", "ppp_loan_date"]
 
 
 def test_company_row_values():
@@ -132,3 +134,13 @@ def test_csv_rows_parse_back():
     csv.writer(buf).writerows([headers, *rows])
     parsed = list(csv.reader(io.StringIO(buf.getvalue())))
     assert parsed[1][headers.index("phone")] == "+1 555"
+
+
+def test_hiring_column_survives_a_failed_recrawl():
+    # Size facts from an earlier good crawl stay true when a re-crawl fails (app/sizing.py
+    # uses the same rule); a crawl that never worked (pages_crawled 0) shows nothing.
+    kept = make_company(enrich_status="failed", website_signals={"has_careers": True, "pages_crawled": 4})
+    never = make_company(enrich_status="failed", website_signals={"has_careers": True, "pages_crawled": 0})
+    headers, rows = exporting.company_table([kept, never])
+    assert [row_dict(headers, r)["hiring"] for r in rows] == ["yes", ""]
+    assert row_dict(headers, rows[0])["https"] == ""  # SSL etc. still need the latest crawl to be good

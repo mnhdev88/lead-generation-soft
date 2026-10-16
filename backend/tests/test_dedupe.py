@@ -193,3 +193,66 @@ def test_same_name_with_different_phones_is_not_merged():
     a = company(name="Brickell Dental", source="google", ref="g1", phone="+1 305-614-4423")
     b = company(name="Brickell Dental", source="google", ref="g2", phone="+1 305-377-8004", lat=LAT + 0.0003)
     assert same_business(a, b) is None
+
+
+# ----- PPP loan on merge (company-size review, finding 0) ------------------------------
+
+PPP_LOAN = {"jobs": 14, "date_approved": "2021-02-03", "match": "same name and ZIP", "confidence": "high"}
+
+
+def test_merge_keeps_the_ppp_loan_of_the_removed_copy(db):
+    from datetime import datetime, timezone
+
+    checked = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    keep = company(ref="1", ppp={}, ppp_checked_at=checked)
+    drop = company(source="google", ref="g1", ppp=dict(PPP_LOAN), ppp_checked_at=checked)
+    db.add_all([keep, drop])
+    db.commit()
+    merged = merge_companies(db, keep, drop)
+    db.commit()
+    assert merged.ppp == PPP_LOAN and merged.ppp_checked_at is not None
+    assert (merged.employees, merged.employees_source) == (14, "ppp")  # the size uses it right away
+
+
+def test_merge_with_better_listing_looks_the_ppp_loan_up_again(db):
+    from datetime import datetime, timezone
+
+    checked = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    # Checked earlier under the poor OpenStreetMap name: nothing found.
+    keep = company(ref="1", ppp={}, ppp_checked_at=checked)
+    drop = company(name="Smile Dental Clinic PLLC", source="google", ref="g1", ppp={}, ppp_checked_at=checked)
+    db.add_all([keep, drop])
+    db.commit()
+    merged = merge_companies(db, keep, drop)
+    assert merged.ppp_checked_at is None  # Google's name and address won: look again
+
+
+def test_merge_keeps_an_existing_ppp_match(db):
+    from datetime import datetime, timezone
+
+    checked = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    keep = company(ref="1", ppp=dict(PPP_LOAN), ppp_checked_at=checked)
+    drop = company(source="google", ref="g1", ppp={}, ppp_checked_at=checked)
+    db.add_all([keep, drop])
+    db.commit()
+    merged = merge_companies(db, keep, drop)
+    assert merged.ppp == PPP_LOAN and merged.ppp_checked_at is not None
+
+
+def test_search_merge_looks_up_ppp_with_the_better_name(db, monkeypatch):
+    looked_up = []
+
+    def apply_ppp(c):
+        from datetime import datetime, timezone
+
+        looked_up.append(c.name)
+        c.ppp, c.ppp_checked_at = {}, datetime.now(timezone.utc)
+        return False
+
+    monkeypatch.setattr(worker.ppp, "available", lambda: True)
+    monkeypatch.setattr(worker.ppp, "apply_ppp", apply_ppp)
+    osm = CompanyResult(name="Smile Dental", source_ref="node/1", phone="+1 512-351-8010", lat=LAT, lon=LON)
+    run_search(db, monkeypatch, "osm", [osm])
+    google = CompanyResult(name="Smile Dental Clinic", source_ref="g1", phone="(512) 351-8010", lat=LAT, lon=LON)
+    run_search(db, monkeypatch, "google", [google])
+    assert looked_up == ["Smile Dental", "Smile Dental Clinic"]

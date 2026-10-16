@@ -8,6 +8,7 @@ Main entry points:
     analyze_page(html, page_url)        -> PageInfo (everything below in one parse)
     extract_emails / extract_phones / extract_socials / extract_people
     detect_signals(html, page_url)      -> dict (platform, copyright year, ...)
+    detect_size_signals(html, page_url) -> dict (stated headcount, founded year, branches, careers link)
     find_candidate_links(html, base_url)-> same-site URLs worth crawling (contact, about, team...)
     rank_emails(emails, site)           -> emails sorted best-first for that website
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 import html as html_lib
 import ipaddress
 import json
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -1198,6 +1200,600 @@ def detect_signals(html: str, page_url: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Business size signals (headcount, founded year, number of branches, careers link)
+# ---------------------------------------------------------------------------
+#
+# Precision over recall: a wrong number is worse than none. Every pattern is anchored on
+# a keyword ("team of", "employ", "founded", "locations"...) and uses bounded repeats,
+# so it runs in linear time. We match one sentence at a time, after hiding numbers that
+# are obviously something else (phones, prices, "24/7", ratings, "Suite 200"...).
+
+# Work limits per page: more text than this is a directory or junk.
+_SIZE_TEXT_LIMIT = 200_000  # characters of visible text
+_SIZE_MAX_SENTENCES = 4000
+_SENTENCE_LIMIT = 400  # characters per sentence
+_SNIPPET_LIMIT = 200  # characters of the sentence we keep to show the user
+_JSONLD_LIMIT = 500_000  # characters per JSON-LD block
+_JSONLD_MAX_NODES = 5000
+MAX_EMPLOYEES = 100_000
+MAX_LOCATIONS = 500
+# Headcounts on one page that differ more than this many times: the page is unclear
+# (one of them is probably about customers), so we store none.
+HEADCOUNT_MAX_SPREAD = 3
+
+# Spelled-out numbers: "twelve", "twenty-five", "two dozen" -> 12, 25, 24.
+_UNITS = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+_TEENS = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+          "eighteen", "nineteen"]
+_TENS = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+_WORD_NUMBERS: dict[str, int] = {w: i + 1 for i, w in enumerate(_UNITS)}
+_WORD_NUMBERS.update({w: i + 10 for i, w in enumerate(_TEENS)})
+for _i, _ten in enumerate(_TENS):
+    _WORD_NUMBERS[_ten] = (_i + 2) * 10
+    for _j, _unit in enumerate(_UNITS):
+        _WORD_NUMBERS[f"{_ten}-{_unit}"] = _WORD_NUMBERS[f"{_ten} {_unit}"] = (_i + 2) * 10 + _j + 1
+_WORD_NUMBERS.update({"a dozen": 12, "two dozen": 24, "three dozen": 36, "half a dozen": 6,
+                      "a hundred": 100, "one hundred": 100})
+# Longest first, so "twenty-five" wins over "twenty" and "two dozen" over "two".
+_WORDNUM = "|".join(re.escape(w).replace(r"\ ", r"\s") for w in sorted(_WORD_NUMBERS, key=len, reverse=True))
+
+_NUM = r"(?:\d{1,3}(?:,\d{3}){1,2}|\d{1,6}|" + _WORDNUM + r")"
+# A number on its own: not glued to letters, "$", "#", "/", a decimal point or more digits.
+_NUM_END = r"(?![\w/:%]|[.,]\d)"
+_NUMBER = r"(?<![\w,.$#/-])(?P<n>" + _NUM + r")" + _NUM_END
+# "over 50", "about 40", "nearly 30": we keep the stated number.
+_QUAL = (r"(?:(?:over|more\s{1,3}than|nearly|almost|about|around|approximately|approx\.?|roughly|"
+         r"some|close\s{1,3}to|upwards\s{1,3}of|just\s{1,3}over|well\s{1,3}over|at\s{1,3}least)\s{1,3})?")
+# "10-15", "50 to 60", "50+": the first number (the lower bound) is the one we keep.
+# Atomic "(?>...)": once read, the range is never cut short to dodge a check after it
+# ("team of 10-15 years" must not become "team of 10").
+_RANGE = r"(?>" + _QUAL + _NUMBER + r"(?:\s{0,2}(?:-|–|—|to)\s{0,2}" + _NUM + _NUM_END + r")?\+?)"
+
+# Numbers that are clearly something else are replaced by " § " before matching.
+_TRAP_RE = re.compile(
+    r"\b1[\s.\-]\d{3}[\s.\-]\d{3}[\s.\-]\d{4}\b"                    # 1-800-555-1234
+    r"|\(?\b\d{3}\)?[\s.\-]{1,2}\d{3}[\s.\-]\d{4}\b"                # (555) 123-4567
+    r"|\$\s?\d[\d,.]{0,12}"                                          # $99
+    r"|\b\d{1,4}\s?[:/]\s?\d{1,4}\b"                                 # 24/7, 1:4, 9:00
+    r"|\b\d(?:\.\d)?\s?-?\s?stars?\b"                                # 5-star, 4.9 stars
+    r"|\b\d{1,6}\.\d{1,6}\b"                                         # 4.9
+    r"|\b\d{1,6}\s?%"                                                # 98%
+    r"|\b\d{1,4}\s?\(k\)"                                            # 401(k)
+    r"|(?:\b(?:suite|ste|unit|apt|lic|license|licence)\b\.?|#)\s{0,2}#?\s{0,2}\d{1,10}(?:-?[a-z]{1,3}\b)?"
+    r"|\b[a-z]{1,20}-\d{1,8}\b"                                      # COVID-19
+    r"|\b\d{1,3}\s{1,3}of\s{1,3}(?:the\s{1,3})?(?:\d{1,4}|top)\b"    # 1 of 10
+    r"|\btop\s{1,3}\d{1,4}\b",                                       # Top 100
+    re.I,
+)
+# Footer lines: their years and names are never about the business size or age.
+_COPYRIGHT_RE = re.compile(r"©|\bcopyright\b|all\s{1,3}rights\s{1,3}reserved|\(c\)\s{0,2}\d", re.I)
+# A sentence ends at . ! or ? followed by a capital letter (so "EST. 1998" stays whole),
+# but not after "Dr." / "Mrs." or an initial ("T.P. Howard's", "Walter J. Bradley").
+_SENTENCE_SPLIT_RE = re.compile(
+    r"(?<![A-Z][a-z]\.)(?<!Mrs\.)(?<!\b[A-Z]\.)(?<=[.!?])\s{1,10}(?=[A-Z\"“(])")
+
+
+def _number_value(text: str) -> int | None:
+    """'1,200' -> 1200, 'twenty-five' -> 25, 'a dozen' -> 12."""
+    text = " ".join(text.lower().split())
+    if text[0].isdigit():
+        return int(text.replace(",", ""))
+    return _WORD_NUMBERS.get(text) or _WORD_NUMBERS.get(text.replace(" ", "-"))
+
+
+def _is_year_like(raw: str, value: int) -> bool:
+    """'1998' looks like a year, so it is never read as a headcount ('Since 1998 our team...')."""
+    return raw.isdigit() and len(raw) == 4 and 1800 <= value <= datetime.now(timezone.utc).year + 1
+
+
+def _size_sentences(parser: _PageParser) -> list[tuple[str, str]]:
+    """(original sentence, sentence with trap numbers hidden) for the page's visible text.
+    Copyright lines are left out."""
+    result: list[tuple[str, str]] = []
+    for line in parser.text[:_SIZE_TEXT_LIMIT].split("\n"):
+        line = " ".join(line.split())
+        if not line or (len(line) <= 300 and _COPYRIGHT_RE.search(line)):
+            continue  # empty, or a short footer line such as "(c) 1999 Acme. Since 1999"
+        for sentence in _SENTENCE_SPLIT_RE.split(line):
+            sentence = sentence[:_SENTENCE_LIMIT]
+            if not sentence or _COPYRIGHT_RE.search(sentence):
+                continue
+            result.append((sentence, _TRAP_RE.sub(" § ", sentence)))
+            if len(result) >= _SIZE_MAX_SENTENCES:
+                return result
+    return result
+
+
+def _snippet(sentence: str) -> str:
+    return sentence[:_SNIPPET_LIMIT]
+
+
+# -- Headcount ---------------------------------------------------------------
+
+# Nouns that count everybody who works there. "people" / "professionals" are weak:
+# they also describe customers or guests, so they need "we" / "our" / "team" nearby.
+_STRONG_STAFF = (r"employees?|staff\s{1,3}members|staff|team\s{1,3}members|crew\s{1,3}members|"
+                 r"workers|teammates|personnel|work\s?force|associates")
+_WEAK_STAFF = r"people|professionals|individuals|colleagues"
+_STAFF_NOUN = r"(?P<noun>" + _STRONG_STAFF + "|" + _WEAK_STAFF + r")\b"
+# Words allowed between the number and the noun ("40 full-time staff").
+_STAFF_ADJ = (r"(?:(?:full[- ]time|part[- ]time|dedicated|talented|friendly|skilled|experienced|"
+              r"caring|licensed|certified|hard[- ]working|highly\s{1,3}trained|trained|local|"
+              r"amazing|wonderful|passionate|professional|knowledgeable|devoted|committed|"
+              r"loyal|happy|great)\s{1,3}){0,2}")
+# Role nouns only count together with "and staff": "30 attorneys and staff".
+_ROLE_AND = (r"(?:(?:attorneys|lawyers|doctors|dentists|physicians|providers|hygienists|nurses|"
+             r"technicians|stylists|engineers|designers|agents|advisors|accountants|therapists|"
+             r"specialists|chefs|cooks|drivers|installers|electricians|plumbers|mechanics|managers|"
+             r"partners|teachers|instructors|consultants|developers)\s{1,3}(?:and|&)\s{1,3})?")
+# Words right after a number that show it counts something else.
+_NOT_STAFF_AFTER = (r"(?!\s{0,3}(?:[a-z'-]{1,20}\s{1,3})?(?:years?|yrs|hours?|days?|minutes?|miles?|sq|"
+                    r"reviews?|patients?|clients?|customers?|projects?|homes?|states?|counties|cities|"
+                    r"locations?|offices?|volunteers?|students?|languages?|certifications?|million|"
+                    r"thousand|billion|k|percent|stars?|awards?|clinics?|branches|stores)\b)")
+
+_HEADCOUNT_RES = [
+    # "team of 25 professionals", "staff of twelve", "a work force of 50-60 people"
+    ("of", re.compile(r"\b(?:team|staff|crew|work\s?force)\s{1,3}of\s{1,3}" + _RANGE + _NOT_STAFF_AFTER, re.I)),
+    # "employs approximately 60 people", "employ over 800 Wisconsinites"
+    ("employ", re.compile(
+        r"(?i:\bemploy(?:s|ing|ed)?\s{1,3}(?:a\s{1,3}(?:staff|team)\s{1,3}of\s{1,3})?" + _RANGE
+        + r"\s{1,3}" + _STAFF_ADJ + r")(?:(?i:" + _STAFF_NOUN + r")|[A-Z][a-z]{1,20}(?:ians|ers|ites|ans)\b)")),
+    # "over 50 employees", "9 friendly team members", "30 attorneys and staff"
+    ("noun", re.compile(_RANGE + r"\s{1,3}" + _STAFF_ADJ + _ROLE_AND + _STAFF_NOUN, re.I)),
+    # "35-person team", "a 12-member staff"
+    ("hyphen", re.compile(
+        r"(?<![\w,.$#/-])(?P<n>" + _NUM + r")-(?:person|member|employee|people|man|woman)\s{1,3}"
+        r"(?:team|staff|firm|company|agency|crew|office|shop|practice|operation)\b", re.I)),
+    # "Number of employees: 45", "Company size: 11-50 employees"
+    ("label", re.compile(
+        r"\b(?:number\s{1,3}of\s{1,3}employees|employees|company\s{1,3}size|team\s{1,3}size|"
+        r"staff\s{1,3}size|headcount)\s{0,2}[:\-–]\s{0,3}" + _RANGE, re.I)),
+    # "Our team has grown to 40 members"
+    ("grown", re.compile(
+        r"\b(?:team|staff)\s{1,3}(?:[a-z']{1,15}\s{1,3}){0,3}?grown\s{1,3}to\s{1,3}" + _RANGE
+        + r"\s{1,3}" + _STAFF_ADJ + r"(?:members|people|employees|staff)\b", re.I)),
+]
+# Just before "40 people": the people are guests, customers or job openings.
+_NOT_STAFF_BEFORE_RE = re.compile(
+    r"\b(?:seats?|seating|up\s{1,3}to|party|parties|guests|attended|served|serves?|serving|"
+    r"treated|treats?|helped|helps?|trusted|trained|taught|hosted|fed|reached|supported|insured|"
+    r"hiring|hire|need|needs|seeking|looking|recruiting|accommodates?|capacity|holds?|table|"
+    r"sees|saw|join)\b", re.I)
+_NOT_STAFF_AFTER_RE = re.compile(
+    r"^\s{0,3}(?:(?:attended|attend|came|visited|joined|enjoyed|participated|registered|signed|showed|"
+    r"turned|a\s{1,3}(?:day|week|month|year)|per|each|every|daily|weekly|annually|"
+    r"or\s{1,3}(?:more|less|fewer|under|over)|and\s{1,3}(?:up|under|over|above|below))\b|\?)", re.I)
+# Within 40 characters before "50 employees": the number is the size of the business's
+# customers, not its own team ("payroll for companies with 5 to 500 employees", "plans for
+# under 50 employees", "coverage for your 25 employees", "we can host 150 people").
+# B2B firms (payroll, insurance, HR, IT, accounting) and venues write this all the time.
+_CLIENT_SIZE_BEFORE_RE = re.compile(
+    r"\b(?:your|companies|businesses|organizations|organisations|firms|employers|clients|customers|"
+    r"startups|offices|practices|groups\s{1,3}of|under|fewer\s{1,3}than|less\s{1,3}than|"
+    r"no\s{1,3}more\s{1,3}than|host|hosts|hosting|accommodate|plans?|between|cover|covers|covering|"
+    r"sized?)\b"
+    # "for" right before the number: "Group health plans for 2-50 employees"
+    r"|\bfor\s{1,3}$", re.I)
+# "people" only counts with one of these words before the number.
+_WE_RE = re.compile(r"\b(?:we|we're|we’re|we've|we’ve|our|us|company|firm|business|team|staff|practice|"
+                    r"agency|shop|crew|employ\w{0,3})\b", re.I)
+
+
+def _headcounts_in(masked: str) -> list[tuple[int, str]]:
+    """Every headcount stated in one (masked) sentence, as (value, kind of pattern)."""
+    found: dict[int, tuple[int, str]] = {}  # position of the number -> (value, kind)
+    for kind, pattern in _HEADCOUNT_RES:
+        for match in pattern.finditer(masked):
+            raw = match.group("n")
+            value = _number_value(raw)
+            if not value or match.start("n") in found:
+                continue
+            if _is_year_like(raw, value) and kind != "label":
+                continue
+            if kind == "noun":
+                before = masked[max(0, match.start() - 30):match.start()]
+                if _NOT_STAFF_BEFORE_RE.search(before) or _NOT_STAFF_AFTER_RE.match(masked[match.end():]):
+                    continue
+                if _CLIENT_SIZE_BEFORE_RE.search(masked[max(0, match.start() - 40):match.start()]):
+                    continue
+                weak = match.group("noun").lower() in ("people", "professionals", "individuals", "colleagues")
+                if weak and not _WE_RE.search(masked[max(0, match.start() - 60):match.start()]):
+                    continue
+            if 1 <= value <= MAX_EMPLOYEES:
+                found[match.start("n")] = (value, kind)
+    return list(found.values())
+
+
+def _headcount_from_text(sentences: list[tuple[str, str]]) -> tuple[int | None, str | None]:
+    """The page's stated headcount and the sentence it came from.
+
+    "team of 4", "employs 60 people", "35-person team", "Employees: 45" and "grown to 40
+    members" clearly describe the business itself, so when the page has any of those we
+    use only them. A bare "50 employees" (the "noun" kind) is used only when nothing
+    clearer is on the page: it is the wording most often about customers.
+    Several numbers usually describe growth, so we take the largest; but when they differ
+    more than HEADCOUNT_MAX_SPREAD times, the page is unclear and we take none."""
+    strong: list[tuple[int, str]] = []  # (value, sentence)
+    noun: list[tuple[int, str]] = []
+    for sentence, masked in sentences:
+        for value, kind in _headcounts_in(masked):
+            if kind == "noun":
+                noun.append((value, sentence))
+            else:
+                strong.append((value, sentence))
+    found = strong or noun
+    if not found:
+        return None, None
+    best = max(found, key=lambda item: item[0])
+    smallest = min(value for value, _ in found)
+    if best[0] > HEADCOUNT_MAX_SPREAD * smallest:
+        return None, None
+    return best[0], _snippet(best[1])
+
+
+# -- Founded year ------------------------------------------------------------
+
+_YEAR = r"(?<![\w#/.,$-])(?P<y>1[89]\d{2}|20\d{2})(?!\w|[.,]\d|\s?[-–]\s?\d)"
+_MONTHS = (r"january|february|march|april|may|june|july|august|september|october|november|december|"
+           r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec")
+# After the verb: up to 6 words, then "in [January|early|the year] YEAR".
+_FOUNDED_VERB_TAIL = (
+    r"(?P<gap>(?:[\s,]{1,3}[\w'’&.-]{1,25}){0,6}?)[\s,]{1,3}in\s{1,3}"
+    r"(?:(?:" + _MONTHS + r"|the\s{1,3}year|early|late|mid|the\s{1,3}(?:spring|summer|fall|autumn|winter)"
+    r"|of)\s{1,3}){0,2}" + _YEAR)
+_FOUNDED_RES = [
+    # tier 1: "founded in 2010", "established in 1983", "founded in January 1952"
+    (1, "verb", re.compile(
+        r"\b(?:founded|established|incorporated|formed|organized)\b" + _FOUNDED_VERB_TAIL, re.I)),
+    # tier 1: "since its founding in 1974"
+    (1, "founding", re.compile(r"\bfounding\s{1,3}in\s{1,3}" + _YEAR, re.I)),
+    # tier 1: "Founded: 2015"
+    (1, "label", re.compile(r"\b(?:founded|established|year\s{1,3}founded|since|est)\s{0,2}[:\-–]\s{0,3}"
+                            + _YEAR, re.I)),
+    # tier 2: "started the practice in 1991", "opened our doors in 2004". Weaker than tier 1:
+    # "The original store opened in 1924; our company was founded in 2010" -> 2010.
+    (2, "verb", re.compile(r"\b(?:started|opened|launched|began)\b" + _FOUNDED_VERB_TAIL, re.I)),
+    # tier 3: "Family-owned since 1952", "Serving Northern Michigan since 2000"
+    (3, "since", re.compile(
+        r"\b(?:family[- ]owned(?:\s{1,3}(?:and|&)\s{1,3}operated)?|family[- ]run|"
+        r"locally[- ]owned(?:\s{1,3}(?:and|&)\s{1,3}operated)?|owned\s{1,3}(?:and|&)\s{1,3}operated|"
+        r"in\s{1,3}business|(?:proudly\s{1,3})?serving(?:\s{1,3}[\w'’&.-]{1,25}){0,4}?|"
+        r"a\s{1,3}(?:family\s{1,3})?tradition|operating|open|"
+        r"been\s{1,3}(?:serving|providing|helping)(?:\s{1,3}[\w'’&.-]{1,25}){0,4}?)"
+        r"\s{0,3},?\s{0,3}since\s{1,3}" + _YEAR, re.I)),
+    # tier 4: "EST. 1998" (logo text), not "Est. 2,000 sq ft" or "Est. wait time"
+    (4, "est", re.compile(r"(?<!\w)est\b\.?\s{0,2}" + _YEAR + r"(?!\s{0,2}(?:sq|ft|min|hours?|wait)\b)", re.I)),
+    # tier 4: a badge "Since 1975 - Celebrating 50 Years!" or "Since 1998 we've been serving"
+    (4, "badge", re.compile(
+        r"^\W{0,3}since\s{1,3}" + _YEAR + r"\s{0,3}(?:$|[-–—|•·:!]|"
+        r",?\s{0,3}we(?:'ve|’ve|\s{1,3}have)\s{1,3}been\s{1,3}(?:serving|providing|helping|proudly))", re.I)),
+]
+# In the words between the verb and "in YEAR": a person's career or a new branch/product.
+_FOUNDED_GAP_REJECT_RE = re.compile(
+    r"\b(?:her|his|career|school|college|residency|studies|training|degree|journey|working|work|"
+    r"website|site|app|program|programme|service|product|blog|podcast|newsletter|campaign|"
+    r"initiative|new|second|third|fourth|another)\b", re.I)
+# Right after the verb, a word ending in -ing: "began offering Invisalign in 2008",
+# "started accepting insurance in 2012" date a service, not the business.
+# Lower case only, so a name like "started Sterling Plumbing in 1990" still counts.
+_FOUNDED_GAP_GERUND_RE = re.compile(
+    r"^[\s,]{1,3}(?!(?:during|something|everything|morning|evening|spring)\b)[a-z]{2,20}ing\b")
+# Just before the verb: the sentence is about a person, a place or a later branch.
+_FOUNDED_BEFORE_REJECT_RE = re.compile(
+    r"\b(?:graduated|received|earned|licensed|practicing|joined|city|town|county|village|building|"
+    r"church|university|college|school|hospital|new|second|third|fourth|another|latest|newest|"
+    r"recently|renovated|remodeled|expanded|website|program|wing|member|voted|award|updated|revised|"
+    r"class)\b", re.I)
+# "Dr. Patel has been serving patients since 1990" is a person's career.
+_PERSON_SUBJECT_RE = re.compile(r"\b(?:dr|mr|mrs|ms|he|she|his|her)\b", re.I)
+# "1998 Main St": a street number, not a year ("opened in 2004 on Main Street" is fine).
+_STREET_AFTER_RE = re.compile(
+    r"^\s{1,3}(?!(?:on|in|at|by|and|from|near)\b)(?:[\w.]{1,20}\s{1,3}){0,2}?"
+    r"(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|"
+    r"ln|lane|way|ct|court|pkwy|parkway|hwy|highway|suite|ste)\b", re.I)
+
+
+def _founded_from_text(sentences: list[tuple[str, str]]) -> tuple[int | None, str | None]:
+    """The founding year the page states, and the sentence it came from."""
+    this_year = datetime.now(timezone.utc).year
+    candidates: list[tuple[int, int, str]] = []  # (tier, year, sentence)
+    for sentence, masked in sentences:
+        for tier, kind, pattern in _FOUNDED_RES:
+            for match in pattern.finditer(masked):
+                year = int(match.group("y"))
+                if not 1800 <= year <= this_year:
+                    continue
+                before = masked[max(0, match.start() - 40):match.start()]
+                if kind == "verb" and (_FOUNDED_GAP_REJECT_RE.search(match.group("gap"))
+                                       or _FOUNDED_GAP_GERUND_RE.match(match.group("gap"))
+                                       or _FOUNDED_BEFORE_REJECT_RE.search(before)):
+                    continue
+                if kind == "since" and (_PERSON_SUBJECT_RE.search(before)
+                                        or _FOUNDED_BEFORE_REJECT_RE.search(before)):
+                    continue
+                if _STREET_AFTER_RE.match(masked[match.end():]):
+                    continue
+                candidates.append((tier, year, sentence))
+    if not candidates:
+        return None, None
+    best_tier = min(tier for tier, _, _ in candidates)
+    best = [(year, sentence) for tier, year, sentence in candidates if tier == best_tier]
+    years = [year for year, _ in best]
+    # Years that disagree: trust only the clearest wording ("founded in", "opened in"),
+    # and take the earliest.
+    if max(years) - min(years) > 2 and best_tier > 2:
+        return None, None
+    year, sentence = min(best, key=lambda item: item[0])
+    return year, _snippet(sentence)
+
+
+# -- Number of locations -----------------------------------------------------
+
+_LOC_NOUN = (r"(?:locations|offices|clinics|branches|stores|shops|studios|salons|restaurants|showrooms|"
+             r"centers|centres|practices|campuses|dealerships|cafes|bakeries|gyms|pharmacies|"
+             r"hospitals|schools)\b")
+_LOC_ADJ = (r"(?:(?:convenient|conveniently\s{1,3}located|great|full[- ]service|area|local|dental|"
+            r"medical|beautiful|friendly|separate|different|physical|new|modern|family|veterinary|"
+            r"chiropractic|retail\s{1,3}(?=stores|shops))\s{1,3}){0,2}")
+_ORDINALS = {"second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8,
+             "ninth": 9, "tenth": 10, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5, "6th": 6, "7th": 7,
+             "8th": 8, "9th": 9, "10th": 10}
+_LOCATIONS_RES = [
+    # "our 5 convenient locations", "with 4 offices", "we now operate 12 stores", "grown to 14 clinics"
+    re.compile(r"\b(?:our|with|have|has|operate|operates|operating|grown\s{1,3}to)\s{1,3}"
+               r"(?:(?:now|over|more\s{1,3}than|nearly|almost|about|around|approximately|some)\s{1,3})?"
+               + _NUMBER + r"\+?\s{1,3}" + _LOC_ADJ + _LOC_NOUN, re.I),
+    # At the start of a sentence or heading: "Two locations to serve you"
+    re.compile(r"^\W{0,3}" + _NUMBER + r"\s{1,3}" + _LOC_ADJ + _LOC_NOUN, re.I),
+    # "offices in 3 cities" (a lower bound). "Serving 12 cities" is a service area: no match.
+    re.compile(r"\b(?:offices|locations|clinics|branches|stores)\s{1,3}in\s{1,3}" + _NUMBER
+               + r"\s{1,3}(?:cities|towns|states|countries|communities)\b", re.I),
+    # "our second location"
+    re.compile(r"\bour\s{1,3}(?P<n>" + "|".join(_ORDINALS) + r")\s{1,3}(?:new\s{1,3})?"
+               r"(?:location|office|clinic|store|branch|restaurant|shop|studio|salon|showroom)\b", re.I),
+]
+
+
+def _locations_from_text(sentences: list[tuple[str, str]]) -> int | None:
+    """The largest number of branches the page states (2..500), or None."""
+    best: int | None = None
+    for _sentence, masked in sentences:
+        for pattern in _LOCATIONS_RES:
+            for match in pattern.finditer(masked):
+                raw = match.group("n").lower()
+                value = _ORDINALS.get(raw) or _number_value(raw)
+                if value and not _is_year_like(raw, value) and 2 <= value <= MAX_LOCATIONS:
+                    best = max(best or 0, value)
+    return best
+
+
+# -- Careers link ------------------------------------------------------------
+
+# The whole link text must be one of these, so "Jobs We Completed", "Career Advice" and
+# "Join Our Mailing List" don't count. A bare "Join Us" is left out too: gyms, churches
+# and clubs use it for membership (a "Join Us" link to /careers still counts by its path).
+_CAREERS_TEXT_RE = re.compile(
+    r"^(?:careers?|career\s{1,3}opportunities|jobs?|job\s{1,3}(?:openings|opportunities)|"
+    r"current\s{1,3}(?:job\s{1,3})?openings|open\s{1,3}positions|employment(?:\s{1,3}opportunities)?|"
+    r"join\s{1,3}(?:our|the)\s{1,3}team|work\s{1,3}(?:with|for)\s{1,3}us|"
+    r"(?:we'?re|we’re|we\s{1,3}are|now)\s{1,3}hiring|hiring|team\s{1,3}openings)\s{0,2}[!.]?$", re.I)
+# A section heading that says the business is hiring.
+_HIRING_HEADING_RE = re.compile(r"^(?:we'?re|we’re|we\s{1,3}are|now)\s{1,3}hiring\s{0,2}[!.]?$", re.I)
+# Path parts (whole parts, e.g. "/careers/" but not "/career-advice/"). Not "/join-us/":
+# that is usually a membership page.
+_CAREERS_PATH_PARTS = {
+    "careers", "career", "jobs", "job-openings", "job-opportunities", "employment",
+    "employment-opportunities", "join-our-team", "join-the-team", "work-with-us",
+    "work-for-us", "hiring", "now-hiring", "were-hiring", "we-are-hiring", "open-positions",
+    "career-opportunities", "current-openings",
+}
+# A link to one of these job sites means the business is hiring.
+_ATS_HOSTS = ("greenhouse.io", "lever.co", "applytojob.com", "bamboohr.com", "workable.com",
+              "recruiting.paylocity.com", "recruitee.com", "workforcenow.adp.com", "breezy.hr",
+              "dentalpost.net", "poachedjobs.com", "harri.com")
+# Paths that are content about jobs, not the business's own jobs page.
+_NOT_CAREERS_PATH_RE = re.compile(
+    r"blog|news|article|tips|advice|services|practice-areas|employment-law|portfolio|projects|"
+    r"gallery|category|tag/|post", re.I)
+
+
+def _careers_link(parser: _PageParser, page_url: str) -> tuple[bool, str | None]:
+    """(has_careers, careers_url): a careers / jobs / "we're hiring" link or heading."""
+    site = registered_domain(_host_of(page_url))
+    for link in parser.links[:_MAX_LINKS]:
+        href = link.href.strip()
+        if not href or href.startswith("#"):
+            continue
+        url = _resolve(href, page_url)
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            continue
+        # Only web addresses: never "JavaScript:...", "data:...", "mailto:..." in any letter case.
+        # (An empty scheme only happens when we were given no page address to resolve against.)
+        if parsed.scheme.lower() not in ("http", "https", ""):
+            continue
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.lower()
+        if _NOT_CAREERS_PATH_RE.search(path):
+            continue
+        if host and any(host == h or host.endswith("." + h) for h in _ATS_HOSTS):
+            return True, url
+        if host == "indeed.com" or host.endswith(".indeed.com"):
+            if path.startswith("/cmp/") and "/jobs" in path:
+                return True, url
+            continue
+        if site and host and registered_domain(host) != site:
+            continue  # another website (e.g. Glassdoor reviews)
+        parts = {p for p in path.split("/") if p}
+        text = link.text.strip()[:60]
+        if parts & _CAREERS_PATH_PARTS or (len(text) <= 40 and _CAREERS_TEXT_RE.match(text)):
+            return True, url
+        # A bare "Opportunities" only counts when it links to /opportunities.
+        if text.lower() == "opportunities" and "opportunities" in parts:
+            return True, url
+    for chunk in parser.chunks:
+        if not chunk.in_link and len(chunk.text) <= 30 and _HIRING_HEADING_RE.match(chunk.text):
+            return True, None
+    return False, None
+
+
+# -- JSON-LD (schema.org) ----------------------------------------------------
+
+def _jsonld_nodes(parser: _PageParser):
+    """Every dict in the page's JSON-LD blocks (walked without recursion, capped)."""
+    count = 0
+    for block in parser.jsonld:
+        if len(block) > _JSONLD_LIMIT:
+            continue
+        try:
+            data = json.loads(block.strip(), strict=False)
+        except (ValueError, TypeError, RecursionError):
+            try:  # trailing commas are a common mistake: {"a": 1,}
+                data = json.loads(re.sub(r",\s{0,50}([}\]])", r"\1", block.strip()), strict=False)
+            except (ValueError, TypeError, RecursionError):
+                continue
+        stack = [(data, 0)]
+        while stack:
+            node, depth = stack.pop()
+            count += 1
+            if count > _JSONLD_MAX_NODES:
+                return
+            if isinstance(node, list):
+                stack.extend((item, depth + 1) for item in reversed(node) if depth < 10)
+            elif isinstance(node, dict):
+                yield node
+                if depth < 10:
+                    stack.extend((v, depth + 1) for v in reversed(list(node.values()))
+                                 if isinstance(v, (dict, list)))
+
+
+_PLAIN_RANGE_RE = re.compile(_RANGE, re.I)
+
+
+def _jsonld_employees(value) -> int | None:
+    """numberOfEmployees in any of its shapes: 12, "12", "11-50", "50+",
+    {"value": 25}, {"minValue": 11, "maxValue": 50}, or a list of those.
+    0, 1 and "" are left out: site builders fill them in by default."""
+    if isinstance(value, list):
+        for item in value[:10]:
+            found = _jsonld_employees(item)
+            if found:
+                return found
+        return None
+    if isinstance(value, dict):
+        for key in ("value", "minValue"):
+            if key in value:
+                found = _jsonld_employees(value[key])
+                if found:
+                    return found
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None  # NaN / Infinity / 1e400: Python's JSON reader allows them, int() would crash
+    if isinstance(value, (int, float)):
+        number = int(value)
+    elif isinstance(value, str):
+        match = _PLAIN_RANGE_RE.search(value[:100])
+        number = _number_value(match.group("n")) if match else None
+    else:
+        return None
+    return number if number and 2 <= number <= MAX_EMPLOYEES else None
+
+
+def _jsonld_year(value) -> int | None:
+    """foundingDate: 1998, "1998", "1998-01-01", "May 1998", "Est. 1998" -> 1998."""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None  # NaN / Infinity / 1e400 (see _jsonld_employees)
+    if isinstance(value, (int, float)):
+        year = int(value)
+    elif isinstance(value, str):
+        match = re.search(r"(?<!\d)(1[89]\d{2}|20\d{2})(?!\d)", value[:100])
+        year = int(match.group(1)) if match else None
+    else:
+        return None
+    return year if year and 1800 <= year <= datetime.now(timezone.utc).year else None
+
+
+def _short_json(key: str, value) -> str:
+    try:
+        return _snippet(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+    except (TypeError, ValueError):
+        return key
+
+
+def _size_from_jsonld(parser: _PageParser) -> dict:
+    """{"employees", "employees_snippet", "founded_year", "founded_snippet", "locations"}"""
+    found: dict = {}
+    for node in _jsonld_nodes(parser):
+        if "employees" not in found and "numberOfEmployees" in node:
+            employees = _jsonld_employees(node["numberOfEmployees"])
+            if employees:
+                found["employees"] = employees
+                found["employees_snippet"] = _short_json("numberOfEmployees", node["numberOfEmployees"])
+        if "founded_year" not in found:
+            for key in ("foundingDate", "foundingYear", "dateFounded", "yearFounded"):
+                year = _jsonld_year(node.get(key))
+                if year:
+                    found["founded_year"] = year
+                    found["founded_snippet"] = _short_json(key, node[key])
+                    break
+        # Branches listed as "department" / "subOrganization": count distinct street addresses.
+        for key in ("department", "subOrganization"):
+            branches = node.get(key)
+            if isinstance(branches, list):
+                addresses = set()
+                for branch in branches[:MAX_LOCATIONS]:
+                    address = branch.get("address") if isinstance(branch, dict) else None
+                    if isinstance(address, dict) and isinstance(address.get("streetAddress"), str):
+                        addresses.add((" ".join(address["streetAddress"].lower().split()),
+                                       str(address.get("postalCode") or "").strip()))
+                if len(addresses) >= 2:
+                    found["locations"] = max(found.get("locations", 0), len(addresses))
+    return found
+
+
+def _size_signals_from(parser: _PageParser, page_url: str) -> dict:
+    """Signals that hint at how big the business is (see the section comment above)."""
+    sentences = _size_sentences(parser)
+    employees, employees_snippet = _headcount_from_text(sentences)
+    founded, founded_snippet = _founded_from_text(sentences)
+    locations = _locations_from_text(sentences)
+    has_careers, careers_url = _careers_link(parser, page_url)
+    jsonld = _size_from_jsonld(parser)
+
+    employees_from = "text" if employees else None
+    if not employees and jsonld.get("employees"):
+        employees, employees_snippet, employees_from = jsonld["employees"], jsonld["employees_snippet"], "jsonld"
+    if not founded and jsonld.get("founded_year"):
+        founded, founded_snippet = jsonld["founded_year"], jsonld["founded_snippet"]
+    if jsonld.get("locations"):
+        locations = max(locations or 0, jsonld["locations"])
+    return {
+        "employees_stated": employees,
+        "employees_from": employees_from,
+        "employees_snippet": employees_snippet,
+        "founded_year": founded,
+        "founded_snippet": founded_snippet,
+        "locations_stated": locations,
+        "has_careers": has_careers,
+        "careers_url": careers_url,
+    }
+
+
+def detect_size_signals(html: str, page_url: str = "") -> dict:
+    """{"employees_stated", "employees_from", "employees_snippet", "founded_year",
+    "founded_snippet", "locations_stated", "has_careers", "careers_url"}"""
+    return _size_signals_from(_parse(html), page_url)
+
+
+# ---------------------------------------------------------------------------
 # Which pages to crawl next
 # ---------------------------------------------------------------------------
 
@@ -1212,6 +1808,9 @@ _LINK_KEYWORDS = [
     (70, ["about", "who-we-are", "uber-uns", "ueber-uns", "a-propos", "quienes-somos",
           "chi-siamo", "sobre", "over-ons", "our-story"]),
     (60, ["impressum", "imprint", "legal-notice", "mentions-legales", "aviso-legal"]),
+    # A list of branches tells us how big the business is (careers pages are not
+    # crawled: finding the link is enough).
+    (40, ["locations", "our-locations", "offices", "our-offices", "branches"]),
     (10, ["privacy", "datenschutz"]),
 ]
 # Paths that match a keyword by accident (blog posts, shop pages, files...).
@@ -1298,6 +1897,6 @@ def analyze_page(html: str, page_url: str) -> PageInfo:
         phones=_phones_from(parser),
         socials=_socials_from(parser, page_url),
         people=_people_from(parser, page_url),
-        signals=_signals_from(parser, html),
+        signals={**_signals_from(parser, html), **_size_signals_from(parser, page_url)},
         links=_candidate_links(parser, page_url),
     )

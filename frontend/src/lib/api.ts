@@ -88,9 +88,64 @@ export type WebsiteSignals = {
   pages_crawled?: number;
   final_url?: string | null;
   status_code?: number | null;
+  // Size clues the website states (backend/app/enrich/extract.py).
+  employees_stated?: number | null; // "a team of 25" -> 25
+  employees_from?: "text" | "jsonld" | null;
+  employees_snippet?: string | null; // the sentence it came from
+  founded_year?: number | null;
+  founded_snippet?: string | null;
+  locations_stated?: number | null; // "12 locations"
+  has_careers?: boolean; // a careers / jobs / "we're hiring" page or section
+  careers_url?: string | null;
 };
 
 export type EnrichStatus = "done" | "failed" | "no_website";
+
+// How big a business is (backend/app/sizing.py).
+export const SIZE_BANDS = ["solo", "small", "medium", "large"] as const;
+export type SizeBand = (typeof SIZE_BANDS)[number];
+export const SIZE_BAND_LABEL: Record<SizeBand, string> = {
+  solo: "Solo (1)",
+  small: "Small (2-10)",
+  medium: "Medium (11-50)",
+  large: "Large (51+)",
+};
+// Fewest people in each band. Same cut-offs as BAND_MIN_PEOPLE in backend/app/sizing.py.
+const BAND_MIN_PEOPLE: Record<SizeBand, number> = { solo: 1, small: 2, medium: 11, large: 51 };
+
+/** The band a headcount falls in: 1 -> "solo", 8 -> "small", 25 -> "medium", 200 -> "large", 0/null -> null. */
+export function bandFor(people: number | null | undefined): SizeBand | null {
+  if (!people || people < 1) return null;
+  return [...SIZE_BANDS].reverse().find((band) => people >= BAND_MIN_PEOPLE[band]) ?? null;
+}
+
+// The reason the backend gives when nothing at all is known (NO_INFO_REASON in backend/app/sizing.py).
+export const NO_SIZE_INFO_REASON = "No size information yet";
+// Where the headcount came from.
+export type EmployeesSource = "website" | "ppp" | "team_page";
+export type SizeConfidence = "high" | "medium" | "low";
+
+// A match in the US PPP loan data, 2020-21 (backend/app/ppp.py). Empty {} = no match / not checked.
+// {not_applicable: true} = the company is outside the US or has no ZIP, so it was not looked up.
+export type PppMatch = {
+  not_applicable?: boolean;
+  jobs?: number | null; // jobs the borrower reported (self-reported, capped at 500)
+  date_approved?: string; // "YYYY-MM-DD"
+  name?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  naics?: string;
+  business_type?: string;
+  amount?: number | null;
+  loan_number?: string;
+  draw?: "first" | "second";
+  loans?: number; // how many loans this borrower has
+  match?: string; // why we think it is the same business, e.g. "same name and ZIP"
+  similarity?: number; // 0..1
+  confidence?: "high" | "medium"; // high = same name at the same street address
+};
 
 export type Company = {
   id: number;
@@ -122,6 +177,14 @@ export type Company = {
   lead_status: LeadStatus;
   score: number | null; // 0-100
   score_reasons: string[]; // e.g. ["Verified email +25", "No website: opportunity +15"]
+  size_band: SizeBand | null; // null = size unknown
+  employees: number | null;
+  employees_source: EmployeesSource | null;
+  size_confidence: SizeConfidence | null;
+  size_reasons: string[]; // why we think it is this size
+  founded_year: number | null;
+  locations_count: number | null;
+  ppp: PppMatch;
   list_ids: number[];
   source: string;
   contacts: Contact[]; // decision-makers / most senior first
@@ -138,6 +201,11 @@ export type CompanyBrief = {
   country: string | null;
   rating: number | null;
   reviews_count: number | null;
+  size_band?: SizeBand | null;
+  employees?: number | null;
+  employees_source?: EmployeesSource | null;
+  size_confidence?: SizeConfidence | null;
+  size_reasons?: string[];
 };
 
 export type Person = Contact & { company: CompanyBrief | null; list_ids: number[] };
@@ -211,7 +279,8 @@ export type CompanyFilters = {
   enrich_status?: EnrichStatus | "none"; // "none" = not crawled yet
   lead_status?: LeadStatus;
   min_score?: number;
-  sort?: "name" | "score" | "rating"; // default "name"; score/rating sort high to low
+  size_band?: SizeBand | "unknown"; // "unknown" = size not worked out
+  sort?: "name" | "score" | "rating" | "employees"; // default "name"; the others sort high to low
 };
 
 export type PeopleFilters = {

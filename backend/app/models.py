@@ -94,6 +94,20 @@ class Company(Base):
     lead_status: Mapped[str] = mapped_column(String(20), default="new", server_default=text("'new'"))
     score: Mapped[int | None] = mapped_column(Integer, index=True)  # 0-100
     score_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    # Company size (app/sizing.py). Every estimate comes with its reasons, like the score.
+    size_band: Mapped[str | None] = mapped_column(String(10), index=True)  # solo|small|medium|large, None = unknown
+    employees: Mapped[int | None] = mapped_column(Integer)  # best headcount figure we have
+    # where `employees` comes from: website (the site says so) | ppp (PPP loan 2020-21) |
+    # team_page (people listed on the website: a minimum)
+    employees_source: Mapped[str | None] = mapped_column(String(20))
+    size_confidence: Mapped[str | None] = mapped_column(String(10))  # high|medium|low
+    size_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    founded_year: Mapped[int | None] = mapped_column(Integer)
+    locations_count: Mapped[int | None] = mapped_column(Integer)  # branches (website + same-website companies)
+    # Matching US PPP loan (app/ppp.py), e.g. {"jobs": 14, "date_approved": "2021-02-03",
+    # "name": "SMILE DENTAL PLLC", "match": "name + zip", ...}; {} = checked, none found
+    ppp: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    ppp_checked_at: Mapped[datetime | None]
     source: Mapped[str] = mapped_column(String(50))
     source_ref: Mapped[str] = mapped_column(String(200))
     raw: Mapped[dict] = mapped_column(JSON, default=dict)

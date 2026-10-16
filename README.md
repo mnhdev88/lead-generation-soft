@@ -42,6 +42,8 @@ backend/                   Python + FastAPI
   app/scoring.py           Lead score (0-100) and its reasons
   app/phones.py            Phone numbers: standard format, mobile/landline, impossible numbers
   app/dedupe.py            Merges the same business found twice (OSM + Google, or twice in OSM)
+  app/sizing.py            Company size estimate (Solo/Small/Medium/Large) and its reasons
+  app/ppp.py               US PPP loan data: download, import, match (headcount reported 2020-21)
   app/exporting.py         CSV / Excel files;  app/sheets.py: Google Sheets export
   app/routers/             API endpoints
   data/leads.db            SQLite database (created automatically)
@@ -260,3 +262,29 @@ To clean up businesses saved before this existed, double-click **`merge-duplicat
 it lists the duplicates, asks before merging, and saves a backup copy of the database first.
 On the server: `cd backend && .venv/bin/python -m app.dedupe` to preview, then add `--apply`
 (back up `data/leads.db` first).
+
+## Company size
+
+Every business gets a size estimate: **Solo (1)**, **Small (2-10)**, **Medium (11-50)** or
+**Large (51+)**, with the reasons shown (hover the badge, or open the business). It uses:
+
+- what the website says ("our team of 25", "founded in 1998", "3 locations", a careers page),
+- people listed on the website (a minimum), branches (other saved listings with the same website),
+  and Google review counts (a weak hint),
+- for US businesses, the **PPP loan data** (US government, 2020-21): the number of jobs the
+  business reported when it got its loan. It is self-reported and a few years old, so it is a
+  strong hint, not today's exact headcount.
+
+No information means "Unknown", never "Solo". Businesses crawled before this feature get their
+website size facts on their next crawl (done automatically).
+
+**PPP data (optional, US only).** It is about 5 GB to download and becomes a ~2 GB file
+`backend/data/ppp.db` (kept apart from `leads.db`, so backups stay small). Download it once:
+
+    cd backend
+    .venv\Scripts\python -m app.ppp download            (Windows)
+    sudo -u leadgen .venv/bin/python -m app.ppp download  (server, in /opt/leadgen/app/backend)
+
+It streams the files straight into the database (no 5 GB of CSV files on disk) and can be run
+again to resume. `python -m app.ppp stats` shows what is there. While the app runs, it then looks
+up your US leads a few hundred at a time when it isn't busy.

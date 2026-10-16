@@ -1,6 +1,7 @@
 """Worker tests: search jobs and website-crawl (enrich) jobs.
 The real crawler is replaced by a fake `crawl_website`, so no network is used."""
 import asyncio
+import threading
 
 import pytest
 from sqlalchemy import select
@@ -20,7 +21,8 @@ def site(emails=(), phones=(), socials=None, people=(), ok=True, error=None, **s
         phones=list(phones),
         socials=dict(socials or {}),
         people=list(people),
-        signals={"https": True, "platform": None, "pages_crawled": 3, **signals},
+        # employees_stated: today's crawler always sets the size keys (None = not stated)
+        signals={"https": True, "platform": None, "pages_crawled": 3, "employees_stated": None, **signals},
     )
 
 
@@ -394,3 +396,89 @@ def test_recover_rules(db):
     assert g.status == "failed" and g.finished_at is not None
     assert g.error == "Interrupted by a restart — run the search again (to avoid paying twice)"
     assert [db.get(SearchJob, i).status for i in (osm, crawl, emails)] == ["queued", "queued", "queued"]
+
+
+# ----- fixes from the company-size review ---------------------------------------------
+
+
+def test_crawls_from_before_the_size_hints_are_crawled_again_once(db, crawler):
+    # Review finding 2: companies crawled before the size hints existed get them on the
+    # next normal crawl; ones crawled by today's crawler are still skipped.
+    old = company("Old", website="https://old.pk", enrich_status="done",
+                  website_signals={"https": True, "pages_crawled": 2})
+    new = company("New", website="https://new.pk", enrich_status="done",
+                  website_signals={"https": True, "pages_crawled": 2, "employees_stated": None})
+    search = make_search(db, old, new)
+    fake = crawler({"https://old.pk": site(employees_stated=12, employees_from="text")})
+    job = enrich(db, search)
+    assert fake.calls == ["https://old.pk"]
+    assert "1 already crawled, skipped" in job.progress_message
+    o = db.get(Company, old.id)
+    assert (o.website_signals["employees_stated"], o.employees, o.size_band) == (12, 12, "medium")
+    enrich(db, search)  # now it has the size keys: skipped like the other one
+    assert fake.calls == ["https://old.pk"]
+
+
+def run_loop_once(db, monkeypatch, calls, stop_after):
+    """Run worker._loop until `stop_after` is recorded in calls (fakes record what ran)."""
+    stop = threading.Event()
+
+    def record(name, result):
+        calls.append(name)
+        if name == stop_after:
+            stop.set()
+        return result
+
+    def fake_run_job(job_id):
+        record("job", None)
+        with worker.SessionLocal() as session:
+            session.get(SearchJob, job_id).status = "done"
+            session.commit()
+
+    monkeypatch.setattr(worker, "run_job", fake_run_job)
+    monkeypatch.setattr(worker, "size_saved_companies", lambda session, limit=None: record(("size", limit), 0))
+    monkeypatch.setattr(worker.ppp, "available", lambda: True)
+    monkeypatch.setattr(worker.ppp, "match_saved_companies",
+                        lambda session, only_unchecked=True, limit=None: record(("ppp", limit), (0, 0)))
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: None)
+    thread = threading.Thread(target=worker._loop, args=(stop,), daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    stop.set()
+    assert not thread.is_alive()
+
+
+def test_backfill_runs_between_jobs_not_before_them(db, monkeypatch):
+    # Review findings 20/25: a queued job starts first; the size and PPP back-fills only
+    # run when nothing is waiting, a capped slice at a time.
+    db.add(company("Unchecked"))  # ppp_checked_at is None: the PPP slice has work
+    db.add(SearchJob(kind="search", query="q", location="l", source="osm"))
+    db.commit()
+    calls = []
+    run_loop_once(db, monkeypatch, calls, stop_after=("ppp", worker.BACKFILL_LIMIT))
+    assert calls == ["job", ("size", worker.BACKFILL_LIMIT), ("ppp", worker.BACKFILL_LIMIT)]
+
+
+def test_backfill_slice_skips_ppp_when_everything_is_checked(db, monkeypatch):
+    from datetime import datetime, timezone
+
+    db.add(company("Checked", ppp_checked_at=datetime.now(timezone.utc)))
+    db.commit()
+    calls = []
+    monkeypatch.setattr(worker, "size_saved_companies", lambda session, limit=None: calls.append("size") or 0)
+    monkeypatch.setattr(worker.ppp, "available", lambda: True)
+    monkeypatch.setattr(worker.ppp, "match_saved_companies", lambda *a, **k: calls.append("ppp") or (0, 0))
+    assert worker._backfill_slice() is False  # nothing to do: the loop waits before trying again
+    assert calls == ["size"]
+
+
+def test_backfill_slice_errors_are_logged_not_raised(db, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(worker, "size_saved_companies", broken)
+    monkeypatch.setattr(worker.ppp, "available", lambda: True)
+    monkeypatch.setattr(worker.ppp, "match_saved_companies", broken)
+    db.add(company("Unchecked"))
+    db.commit()
+    assert worker._backfill_slice() is False

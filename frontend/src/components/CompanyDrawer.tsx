@@ -5,7 +5,21 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { AddToListButton } from "@/components/AddToListButton";
 import { EmailStatusBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
-import { api, type Activity, type Company, type Contact, type EmailStatus, type Job, type LeadStatus } from "@/lib/api";
+import {
+  api,
+  bandFor,
+  NO_SIZE_INFO_REASON,
+  SIZE_BAND_LABEL,
+  SIZE_BANDS,
+  type Activity,
+  type Company,
+  type Contact,
+  type EmailStatus,
+  type Job,
+  type LeadStatus,
+  type SizeConfidence,
+  type WebsiteSignals,
+} from "@/lib/api";
 
 // ----- small helpers shared with the results table ---------------------------------
 
@@ -346,6 +360,7 @@ export function CompanyDrawer({
                   </ul>
                 </Section>
               )}
+              <SizeSection company={company} />
               <EmailsSection company={company} />
               <PeopleSection contacts={company.contacts} />
               <WebsiteSection company={company} />
@@ -519,6 +534,144 @@ function PeopleSection({ contacts }: { contacts: Contact[] }) {
   );
 }
 
+/** Where the headcount came from, in words. `s` = the website facts (empty when not crawled). */
+function employeesSourceText(c: Company, s: WebsiteSignals) {
+  if (c.employees_source === "website") {
+    // A number hidden in the page's code (JSON-LD) is often a template's default, not a real count.
+    if (s.employees_from === "jsonld") return "from the website's page data (may be a template value)";
+    return "website says";
+  }
+  if (c.employees_source === "team_page") return "a minimum: people listed on the website";
+  if (c.employees_source === "ppp") {
+    const year = c.ppp?.date_approved?.slice(0, 4);
+    return `PPP loan${year ? ` ${year}` : ""} (self-reported)`;
+  }
+  return null;
+}
+
+/** A short note when the size band does not fit the headcount, e.g. "Medium" but 5 employees.
+ * Null when they agree. */
+function bandMismatchNote(c: Company) {
+  const countBand = bandFor(c.employees);
+  if (!c.size_band || !countBand || countBand === c.size_band) return null;
+  const raised = SIZE_BANDS.indexOf(c.size_band) > SIZE_BANDS.indexOf(countBand);
+  if (raised && c.locations_count && c.locations_count > 1)
+    return `size raised because of ${c.locations_count} locations`;
+  return `size ${raised ? "raised" : "lowered"} by other clues, see below`;
+}
+
+// Website links we are happy to open. A crawled page could hold "javascript:" or "data:" links.
+const SAFE_LINK = /^https?:\/\//i;
+
+const CONFIDENCE_LABEL: Record<SizeConfidence, string> = {
+  high: "High",
+  medium: "Medium",
+  low: "Low — a rough guess",
+};
+
+/** How big the business is, and why we think so. */
+function SizeSection({ company: c }: { company: Company }) {
+  // Website facts only mean something when they came from a successful crawl (they are kept
+  // when a later re-crawl fails, like the size estimate does in backend/app/sizing.py).
+  const s: WebsiteSignals = c.website_signals?.pages_crawled ? c.website_signals : {};
+  const ppp = c.ppp ?? {};
+  // {not_applicable: true} means the PPP data was not checked (not a US company), so show nothing.
+  const showPpp = !ppp.not_applicable && Object.keys(ppp).length > 0;
+  // "No size information yet" only repeats "Size: Unknown", so we show a helpful hint instead.
+  const reasons = (c.size_reasons ?? []).filter((r) => r !== NO_SIZE_INFO_REASON);
+  const facts: [string, React.ReactNode][] = [];
+  facts.push(["Size", c.size_band ? SIZE_BAND_LABEL[c.size_band] : "Unknown"]);
+  if (c.employees) {
+    const source = employeesSourceText(c, s);
+    const note = bandMismatchNote(c);
+    // The sentence the number came from is already quoted in the reasons below.
+    facts.push([
+      "Employees",
+      <>
+        {c.employees.toLocaleString()}
+        {source && <span className="text-[var(--muted)]"> · {source}</span>}
+        {note && <span className="block text-xs text-[var(--muted)]">({note})</span>}
+      </>,
+    ]);
+  }
+  if (c.size_band && c.size_confidence) facts.push(["Confidence", CONFIDENCE_LABEL[c.size_confidence]]);
+  const founded = c.founded_year ?? s.founded_year;
+  if (founded) facts.push(["Founded", String(founded)]);
+  if (c.locations_count) facts.push(["Locations", String(c.locations_count)]);
+  if (s.has_careers)
+    facts.push([
+      "Hiring",
+      s.careers_url && SAFE_LINK.test(s.careers_url) ? (
+        <a href={s.careers_url} target="_blank" rel="noreferrer" className="link">
+          Yes — careers page ↗
+        </a>
+      ) : (
+        "Yes — the website mentions jobs"
+      ),
+    ]);
+
+  return (
+    <Section title="Company size">
+      <FactList facts={facts} />
+      {showPpp && (
+        <div className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm">
+          <p className="text-xs font-medium text-[var(--muted)]">US PPP loan data, 2020-21</p>
+          <p className="font-medium">{ppp.name ?? "Unknown borrower"}</p>
+          {(ppp.address || ppp.city) && (
+            <p className="text-xs text-[var(--muted)]">
+              {[ppp.address, ppp.city, [ppp.state, ppp.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")}
+            </p>
+          )}
+          <p className="mt-1 text-xs">
+            {ppp.jobs !== null && ppp.jobs !== undefined ? `${ppp.jobs} jobs reported` : "No job count given"}
+            {ppp.date_approved && ` · approved ${ppp.date_approved}`}
+            {ppp.loans && ppp.loans > 1 ? ` · ${ppp.loans} loans` : ""}
+          </p>
+          {ppp.match && (
+            <p className="text-xs text-[var(--muted)]">
+              Matched on: {ppp.match}
+              {ppp.confidence === "high" && " (sure match)"}
+              {ppp.confidence === "medium" && " (likely match, worth a check)"}
+            </p>
+          )}
+        </div>
+      )}
+      {reasons.length > 0 && (
+        <ul className="space-y-0.5 text-sm">
+          {reasons.map((r) => (
+            <li key={r} className="flex gap-2">
+              <span aria-hidden className="text-[var(--muted)]">
+                •
+              </span>
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
+      {!c.size_band && (
+        <p className="text-xs text-[var(--muted)]">
+          No size clues yet. Crawling the website and finding people helps work it out.
+        </p>
+      )}
+    </Section>
+  );
+}
+
+/** Label / value pairs in two columns. */
+function FactList({ facts }: { facts: [string, React.ReactNode][] }) {
+  if (facts.length === 0) return null;
+  return (
+    <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+      {facts.map(([label, value]) => (
+        <div key={label} className="contents">
+          <dt className="text-[var(--muted)]">{label}</dt>
+          <dd className="min-w-0 break-words">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 const OUTDATED_BEFORE_YEAR = new Date().getFullYear() - 2;
 
 function WebsiteSection({ company: c }: { company: Company }) {
@@ -551,16 +704,7 @@ function WebsiteSection({ company: c }: { company: Company }) {
       <p className={`text-xs ${c.enrich_status === "failed" ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}>
         {crawlText}
       </p>
-      {facts.length > 0 && (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-          {facts.map(([label, value]) => (
-            <div key={label} className="contents">
-              <dt className="text-[var(--muted)]">{label}</dt>
-              <dd className="min-w-0 break-words">{value}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      <FactList facts={facts} />
       {socials.length > 0 && (
         <div className="flex flex-wrap gap-x-3 text-sm">
           {socials.map(([net, url]) => (

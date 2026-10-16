@@ -264,6 +264,14 @@ def merge_companies(session: Session, keep: Company, drop: Company, reason: str 
     if (keep.lead_status or "new") == "new" and (drop.lead_status or "new") != "new":
         keep.lead_status = drop.lead_status
 
+    # US PPP loan (app/ppp.py): a loan found for either copy is kept. When only the listing
+    # facts changed (the better source won), keep is looked up again with its new name and
+    # address. (rescore below then uses the loan's headcount for the size.)
+    if not (keep.ppp or {}).get("jobs") and (drop.ppp or {}).get("jobs"):
+        keep.ppp, keep.ppp_checked_at = dict(drop.ppp), drop.ppp_checked_at
+    elif winner is drop and not (keep.ppp or {}).get("jobs"):
+        keep.ppp_checked_at = None  # the worker and the idle back-fill look it up again
+
     # Everything that points at drop now points at keep.
     _merge_contacts(session, keep, drop)
     for a in list(drop.activities):

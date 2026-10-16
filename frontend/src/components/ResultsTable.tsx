@@ -11,21 +11,24 @@ import {
   sortTeam,
 } from "@/components/CompanyDrawer";
 import { ExportMenu } from "@/components/ExportMenu";
-import { LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
+import { LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge, SizeBadge } from "@/components/ui";
 import {
   api,
   LEAD_STATUS_LABEL,
   LEAD_STATUSES,
+  SIZE_BAND_LABEL,
+  SIZE_BANDS,
   type Company,
   type CompanyFilters,
   type Contact,
   type EnrichStatus,
   type Job,
   type LeadStatus,
+  type SizeBand,
 } from "@/lib/api";
 
 const PAGE_SIZE = 50;
-const COLUMNS = 10; // keep in sync with the <th> cells below (used by colSpan)
+const COLUMNS = 11; // keep in sync with the <th> cells below (used by colSpan)
 const TEAM_PREVIEW = 2; // people shown in the Team column before "Show all"
 
 // A copyright year older than this suggests the website hasn't been updated in a while.
@@ -35,6 +38,7 @@ type Toggle = "any" | "yes" | "no";
 const toBool = (t: Toggle) => (t === "any" ? undefined : t === "yes");
 
 type CrawlFilter = "any" | EnrichStatus | "none";
+type SizeFilter = "any" | SizeBand | "unknown";
 type SortBy = NonNullable<CompanyFilters["sort"]>;
 
 const isActive = (j: Job) => j.status === "queued" || j.status === "running";
@@ -90,6 +94,7 @@ export function ResultsTable({
   const [email, setEmail] = useState<Toggle>("any");
   const [crawl, setCrawl] = useState<CrawlFilter>("any");
   const [leadStatus, setLeadStatus] = useState<LeadStatus | "any">("any");
+  const [size, setSize] = useState<SizeFilter>("any");
   const [minScore, setMinScore] = useState(0);
   const [sort, setSort] = useState<SortBy>("name");
   const [paging, setPaging] = useState({ key: "", page: 0 });
@@ -111,6 +116,7 @@ export function ResultsTable({
     has_email: toBool(email),
     enrich_status: crawl === "any" ? undefined : crawl,
     lead_status: leadStatus === "any" ? undefined : leadStatus,
+    size_band: size === "any" ? undefined : size,
     min_score: minScore || undefined,
     sort: sort === "name" ? undefined : sort,
   };
@@ -268,6 +274,18 @@ export function ResultsTable({
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-sm">
+          <span className="text-[var(--muted)]">Size</span>
+          <select className="input w-auto py-1" value={size} onChange={(e) => setSize(e.target.value as SizeFilter)}>
+            <option value="any">Any</option>
+            {SIZE_BANDS.map((b) => (
+              <option key={b} value={b}>
+                {SIZE_BAND_LABEL[b]}
+              </option>
+            ))}
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-sm">
           <span className="text-[var(--muted)]">Min score</span>
           <select className="input w-auto py-1" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))}>
             <option value={0}>Any</option>
@@ -281,6 +299,7 @@ export function ResultsTable({
             <option value="name">Name</option>
             <option value="score">Score (high first)</option>
             <option value="rating">Rating (high first)</option>
+            <option value="employees">Employees (most first)</option>
           </select>
         </label>
       </div>
@@ -368,7 +387,7 @@ export function ResultsTable({
 
       {/* On small screens the table scrolls sideways inside the card. */}
       <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1280px] text-sm">
+        <table className="w-full min-w-[1360px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">
@@ -386,6 +405,7 @@ export function ResultsTable({
               </th>
               <th className="px-3 py-2">Business</th>
               <th className="px-3 py-2">Score</th>
+              <th className="px-3 py-2">Size</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2">Phone</th>
               <th className="px-3 py-2">Emails</th>
@@ -423,6 +443,15 @@ export function ResultsTable({
                     </td>
                     <td className="px-3 py-2">
                       <ScoreBadge score={c.score} reasons={c.score_reasons} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <SizeBadge
+                        band={c.size_band}
+                        employees={c.employees}
+                        source={c.employees_source}
+                        confidence={c.size_confidence}
+                        reasons={c.size_reasons}
+                      />
                     </td>
                     <td className="px-3 py-2">
                       <LeadStatusSelect

@@ -25,6 +25,9 @@ COMPANY_HEADERS = [
     "decision_maker", "decision_maker_title", "decision_maker_email",
     # Phone check (app/phones.py)
     "phone_type",
+    # Company size (app/sizing.py) and the US PPP loan (app/ppp.py)
+    "size_band", "employees", "employees_source", "founded_year", "locations", "hiring",
+    "ppp_jobs", "ppp_loan_date",
 ]
 
 PEOPLE_HEADERS = [
@@ -76,8 +79,11 @@ def company_table(companies: Iterable[Company]) -> tuple[list[str], list[list[Ce
         socials = c.socials or {}
         signals = c.website_signals or {}
         crawled = c.enrich_status == "done"  # website facts are only reliable after a good crawl
+        # Size facts (hiring) stay true when a later re-crawl fails: same rule as app/sizing.py.
+        size_facts = bool(signals.get("pages_crawled"))
         statuses = c.email_statuses or {}
         dm = best_decision_maker(c)
+        ppp = c.ppp or {}
         rows.append([
             c.name, c.category, c.phone, c.email, "; ".join(_unique_emails(c)), c.website, c.domain,
             c.address, c.city, c.country, c.lat, c.lon, c.rating, c.reviews_count, c.opening_hours,
@@ -91,6 +97,9 @@ def company_table(companies: Iterable[Company]) -> tuple[list[str], list[list[Ce
             c.lead_status or "new", c.score, "; ".join(c.score_reasons or []),
             dm.full_name if dm else None, dm.title if dm else None, dm.email if dm else None,
             c.phone_type,
+            c.size_band, c.employees, c.employees_source, c.founded_year, c.locations_count,
+            _yes_no(bool(signals.get("has_careers"))) if size_facts else "",
+            ppp.get("jobs"), ppp.get("date_approved"),
         ])
     return list(COMPANY_HEADERS), rows
 

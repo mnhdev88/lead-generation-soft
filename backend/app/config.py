@@ -72,6 +72,11 @@ HUNTER_MONTHLY_LIMIT = int(os.getenv("HUNTER_MONTHLY_LIMIT", "25"))
 # Path to a Google service-account JSON key file. Share your sheet with that account's email.
 GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE", "").strip()
 
+# --- US PPP loan data (company size, optional) ---
+# A separate database made by "python -m app.ppp download" (several GB, so it is kept out of
+# leads.db and its daily backup). When the file doesn't exist, PPP matching is simply skipped.
+PPP_DB_PATH = Path(os.getenv("PPP_DB_PATH", str(DATA_DIR / "ppp.db")))
+
 # Browser-like user agent: many small-business sites block obvious bots.
 CRAWL_USER_AGENT = os.getenv(
     "CRAWL_USER_AGENT",

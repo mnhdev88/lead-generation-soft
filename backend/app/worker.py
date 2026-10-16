@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from . import config
+from . import config, ppp
 from .config import CRAWL_CONCURRENCY
 from .db import SessionLocal
 from .emails import find_people_emails, learn_pattern, normalize_email, verify_emails
@@ -36,6 +36,7 @@ from .people import classify
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import hunter
 from .scoring import recompute_scores, rescore
+from .sizing import refresh_branch_sizes, size_saved_companies
 from .sources import SOURCES, CompanyResult, SourceError
 from .usage import UsageLimitError, get_usage
 from .utils import extract_domain, normalize_url, own_domain
@@ -59,6 +60,11 @@ EMAIL_JOB_THREADS = 4
 EMAIL_STATUS_RANK = {"valid": 0, "catch_all": 1, "unknown": 2, "risky": 2, "invalid": 3}
 WEBSITE_EMAIL_CONFIDENCE = 70  # a person's email listed on their own company website
 HUNTER_PATTERN_CONFIDENCE = 75  # Hunter's own guess of a domain's email pattern
+
+# While no job is waiting, older companies get a size estimate and a PPP lookup, this many
+# at a time (a job the user starts then waits a few seconds at most).
+BACKFILL_LIMIT = 200
+BACKFILL_RECHECK_SECONDS = 300  # nothing left to fill in: look again after this long
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -155,6 +161,14 @@ def _upsert_company(session, source: str, r: CompanyResult) -> Company:
     return company
 
 
+def _look_up_ppp(company: Company) -> None:
+    """Find the company's US PPP loan (its reported headcount). Never stops the search."""
+    try:
+        ppp.apply_ppp(company)
+    except Exception:
+        log.exception("PPP lookup for company %s failed", company.id)
+
+
 def run_search_job(session, job: SearchJob) -> None:
     warnings: list[str] = []
 
@@ -183,18 +197,28 @@ def run_search_job(session, job: SearchJob) -> None:
             .where(Company.source == source.name, Company.source_ref.in_(refs[i:i + 500]))
         ).all()
     seen = set()
+    domains = set()  # websites of the saved companies (to size their branches again below)
     merged = 0
+    check_ppp = ppp.available()  # the US PPP loan data is downloaded (app/ppp.py)
     for r in results:
         company = _upsert_company(session, source.name, r)
-        rescore(company)
         # The same business saved before (e.g. found on OpenStreetMap, now on Google)?
         company, removed_id = merge_if_duplicate(session, company)
+        if check_ppp and company.ppp_checked_at is None:
+            _look_up_ppp(company)
+        rescore(company)
+        if company.domain:
+            domains.add(company.domain)
         if removed_id is not None:
             merged += 1
             seen.discard(removed_id)
         if company.id not in seen:
             seen.add(company.id)
             session.merge(JobResult(job_id=job.id, company_id=company.id))
+    # Branches of one business were saved one by one (the first saw no others yet): size
+    # them all again together, so each shows the same number of locations.
+    if domains:
+        refresh_branch_sizes(session, domains)
     job.result_count = job.total = job.processed = len(seen)
     job.status = "done"
     message = f"Found {len(seen)} businesses."
@@ -442,7 +466,10 @@ def run_enrich_job(session, job: SearchJob) -> None:
     params = job.params or {}
     force = bool(params.get("force"))
     candidates = _job_targets(session, job)
-    targets = [c for c in candidates if force or c.enrich_status != "done"]
+    # Already crawled ones are skipped, except crawls from before the size hints existed
+    # (no "employees_stated" in the website facts): crawled again once to fill them in.
+    targets = [c for c in candidates
+               if force or c.enrich_status != "done" or "employees_stated" not in (c.website_signals or {})]
     skipped = len(candidates) - len(targets)
 
     no_website = [c for c in targets if not c.website]
@@ -871,6 +898,34 @@ def recover_jobs() -> None:
         session.commit()
 
 
+def _backfill_slice() -> bool:
+    """Run while no job is waiting: give up to BACKFILL_LIMIT companies saved before sizing
+    existed a size estimate, and look up to BACKFILL_LIMIT US companies up in the PPP loan
+    data (app/ppp.py) once it is downloaded. Small slices, so a job the user starts never
+    waits long. Returns True when there was something to do (call again soon)."""
+    busy = False
+    try:
+        with SessionLocal() as session:
+            n_sized = size_saved_companies(session, limit=BACKFILL_LIMIT)
+        if n_sized:
+            busy = True
+            log.info("Estimated the size of %d companies saved earlier", n_sized)
+    except Exception:
+        log.exception("Could not estimate the size of the existing companies")
+    try:
+        if ppp.available():
+            with SessionLocal() as session:
+                waiting = session.scalar(select(Company.id).where(Company.ppp_checked_at.is_(None)).limit(1))
+                if waiting is not None:
+                    checked, matched = ppp.match_saved_companies(session, only_unchecked=True, limit=BACKFILL_LIMIT)
+                    busy = True
+                    if checked:
+                        log.info("Looked up %d US companies in the PPP data: %d loans found", checked, matched)
+    except Exception:
+        log.exception("Could not look up the saved companies in the PPP data")
+    return busy
+
+
 def _loop(stop: threading.Event) -> None:
     try:
         recover_jobs()
@@ -894,6 +949,7 @@ def _loop(stop: threading.Event) -> None:
         log.exception("Could not score the existing leads")
 
     # Catch everything: one bad job or a locked database must never kill this thread.
+    next_backfill = 0.0  # time.monotonic() when the next idle back-fill may run
     while not stop.is_set():
         job_id = None
         try:
@@ -902,6 +958,12 @@ def _loop(stop: threading.Event) -> None:
                     select(SearchJob.id).where(SearchJob.status == "queued").order_by(SearchJob.id).limit(1)
                 )
             if job_id is None:
+                # Nothing to do: fill in a few older companies, then check for jobs again.
+                if time.monotonic() >= next_backfill:
+                    busy = _backfill_slice()
+                    next_backfill = time.monotonic() + (0 if busy else BACKFILL_RECHECK_SECONDS)
+                    if busy:
+                        continue
                 stop.wait(POLL_SECONDS)
                 continue
             log.info("Running job %s", job_id)

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
@@ -19,7 +21,10 @@ from ..schemas import (
 
 router = APIRouter(prefix="/api/companies", tags=["companies"])
 
-SORT_PATTERN = "^(name|score|rating)$"
+SORT_PATTERN = "^(name|score|rating|employees)$"
+# Size bands (app/sizing.py), plus "unknown" for companies without a size estimate.
+SizeBandFilter = Literal["solo", "small", "medium", "large", "unknown"]
+SIZE_BAND_FILTERS: tuple[str, ...] = SizeBandFilter.__args__  # type: ignore[attr-defined]
 
 
 def _escape_like(text: str) -> str:
@@ -37,6 +42,7 @@ def filters(
     enrich_status: str | None = None,
     lead_status: str | None = None,
     min_score: int | None = None,
+    size_band: SizeBandFilter | None = None,  # solo|small|medium|large, or "unknown" = no estimate
 ) -> Select:
     """Shared query filters for the list and export endpoints (and the Google Sheets
     export, which calls it as a plain function: filters(job_id=4, has_email=True))."""
@@ -60,14 +66,24 @@ def filters(
         stmt = stmt.where(func.coalesce(Company.lead_status, "new") == lead_status)
     if min_score is not None:
         stmt = stmt.where(Company.score >= min_score)
+    if size_band:
+        # (Checked here too: the Google Sheets export calls this without FastAPI's checks.)
+        if size_band not in SIZE_BAND_FILTERS:
+            raise ValueError(f"size_band must be one of {', '.join(SIZE_BAND_FILTERS)}")
+        if size_band == "unknown":
+            stmt = stmt.where(Company.size_band.is_(None))
+        else:
+            stmt = stmt.where(Company.size_band == size_band)
     return stmt
 
 
 def company_order(sort: str | None) -> list:
-    """ORDER BY for 'name' (default), 'score' or 'rating' (high to low, empty last)."""
+    """ORDER BY for 'name' (default), 'score', 'rating' or 'employees' (high to low, empty last)."""
     name = [func.lower(Company.name), Company.id]
     if sort == "score":
         return [Company.score.is_(None), Company.score.desc(), *name]
+    if sort == "employees":
+        return [Company.employees.is_(None), Company.employees.desc(), *name]
     if sort == "rating":
         return [Company.rating.is_(None), Company.rating.desc(), Company.reviews_count.desc(), *name]
     return name

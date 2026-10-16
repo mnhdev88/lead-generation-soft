@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session, selectinload
 from .models import Company, Contact
 from .people import classify
 from .phones import is_usable
+from .sizing import apply_size, branch_counts
 
 # --- weights -------------------------------------------------------------------------
 
@@ -176,11 +177,14 @@ def score_contact(contact: Contact, company: Company | None = None) -> tuple[int
     return _finish(points, contact.lead_status)
 
 
-def rescore(company: Company) -> None:
-    """Update the scores of a company and all its people (the caller commits)."""
+def rescore(company: Company, branches: int | None = None) -> None:
+    """Update the scores of a company and all its people, and the company's size estimate
+    (app/sizing.py). branches: the company's branches, when already counted for a whole
+    batch (sizing.branch_counts); None = count them now. The caller commits."""
     company.score, company.score_reasons = score_company(company)
     for contact in company.contacts or []:
         contact.score, contact.score_reasons = score_contact(contact, company)
+    apply_size(company, branches)
 
 
 RECOMPUTE_BATCH = 200  # companies per database commit
@@ -209,10 +213,11 @@ def recompute_scores(session: Session, *, only_missing: bool = False) -> tuple[i
         batch = list(session.scalars(stmt.where(Company.id > last_id).order_by(Company.id).limit(RECOMPUTE_BATCH)))
         if not batch:
             break
+        branches = branch_counts(session, batch)  # one query for the batch, not one per company
         for company in batch:
             for contact in company.contacts:
                 _classify_if_missing(contact)
-            rescore(company)
+            rescore(company, branches[company.id])
             n_companies += 1
             n_contacts += len(company.contacts)
         last_id = batch[-1].id

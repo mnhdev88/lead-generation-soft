@@ -17,6 +17,7 @@ LeadStatus = Literal["new", "contacted", "replied", "interested", "won", "lost",
 LEAD_STATUSES: tuple[str, ...] = LeadStatus.__args__  # type: ignore[attr-defined]
 EmailStatus = Literal["valid", "invalid", "catch_all", "unknown", "risky"]
 Seniority = Literal["owner", "c_level", "director", "manager", "professional", "staff"]
+SizeBand = Literal["solo", "small", "medium", "large"]  # app/sizing.py
 
 
 # ----- jobs ----------------------------------------------------------------------
@@ -161,17 +162,26 @@ class CompanyOut(BaseModel):
     lead_status: str = "new"
     score: int | None = None
     score_reasons: list[str] = []
+    # Company size (app/sizing.py): band None = unknown; every estimate has its reasons.
+    size_band: SizeBand | None = None
+    employees: int | None = None
+    employees_source: str | None = None  # website | ppp | team_page
+    size_confidence: str | None = None  # high | medium | low
+    size_reasons: list[str] = []
+    founded_year: int | None = None
+    locations_count: int | None = None
+    ppp: dict = {}  # matching US PPP loan (app/ppp.py), {} = none found / not checked
     list_ids: list[int] = []  # lists this company is in (filled by the router)
     source: str
     contacts: list[ContactOut] = []  # sorted: decision-makers / most senior first
 
     # Rows created before a column existed may hold NULL.
-    @field_validator("emails", "contacts", "score_reasons", "list_ids", mode="before")
+    @field_validator("emails", "contacts", "score_reasons", "size_reasons", "list_ids", mode="before")
     @classmethod
     def _none_to_list(cls, v):
         return v or []
 
-    @field_validator("socials", "website_signals", "email_statuses", mode="before")
+    @field_validator("socials", "website_signals", "email_statuses", "ppp", mode="before")
     @classmethod
     def _none_to_dict(cls, v):
         return v or {}
@@ -202,6 +212,16 @@ class CompanyBrief(BaseModel):
     country: str | None
     rating: float | None = None
     reviews_count: int | None = None
+    size_band: SizeBand | None = None
+    employees: int | None = None
+    employees_source: str | None = None  # website | ppp | team_page
+    size_confidence: str | None = None  # high | medium | low
+    size_reasons: list[str] = []
+
+    @field_validator("size_reasons", mode="before")
+    @classmethod
+    def _none_to_list(cls, v):
+        return v or []
 
 
 class PersonOut(ContactOut):
