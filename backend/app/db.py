@@ -36,11 +36,20 @@ def _add_missing_columns() -> None:
                 conn.execute(text(ddl))
 
 
+def _add_missing_indexes() -> None:
+    """Indexes of columns added by _add_missing_columns (create_all skips existing tables)."""
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (registers tables)
 
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _add_missing_indexes()
 
 
 def get_session():

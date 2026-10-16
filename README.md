@@ -40,6 +40,8 @@ backend/                   Python + FastAPI
   app/providers/hunter.py  Optional Hunter.io backup
   app/people/              Job title -> seniority / decision-maker
   app/scoring.py           Lead score (0-100) and its reasons
+  app/phones.py            Phone numbers: standard format, mobile/landline, impossible numbers
+  app/dedupe.py            Merges the same business found twice (OSM + Google, or twice in OSM)
   app/exporting.py         CSV / Excel files;  app/sheets.py: Google Sheets export
   app/routers/             API endpoints
   data/leads.db            SQLite database (created automatically)
@@ -246,3 +248,15 @@ link...).
 
 Create `backend/app/sources/<name>.py` with a class extending `Source` (see `base.py`),
 implement `search()`, and register it in `backend/app/sources/__init__.py`.
+
+## Duplicate businesses
+
+The same business is often listed by both OpenStreetMap and Google. New search results are
+merged automatically with a business you already have when they share a phone number and a
+similar name, the same website at the same spot, or the same name at the same spot. The merge
+keeps your status, notes and lists, and writes a "Merged" entry in the business's timeline.
+
+To clean up businesses saved before this existed, double-click **`merge-duplicates.bat`**:
+it lists the duplicates, asks before merging, and saves a backup copy of the database first.
+On the server: `cd backend && .venv/bin/python -m app.dedupe` to preview, then add `--apply`
+(back up `data/leads.db` first).

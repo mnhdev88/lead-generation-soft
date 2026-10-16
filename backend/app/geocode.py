@@ -8,9 +8,9 @@ from .sources.base import SourceError
 
 def geocode(client: httpx.Client, location: str) -> dict:
     """Return Nominatim's best match for `location` (a dict with "boundingbox",
-    "display_name", "osm_type", "osm_id", ...). Raises SourceError if nothing matches.
+    "display_name", "osm_type", "osm_id", "address": {"country_code": "pk", ...}, ...). Raises SourceError if nothing matches.
     The client should send a User-Agent header (Nominatim requires one)."""
-    r = client.get(NOMINATIM_URL, params={"q": location, "format": "json", "limit": 1})
+    r = client.get(NOMINATIM_URL, params={"q": location, "format": "json", "limit": 1, "addressdetails": 1})
     r.raise_for_status()
     hits = r.json()
     if not hits:

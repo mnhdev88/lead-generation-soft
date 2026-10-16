@@ -5,7 +5,7 @@ stored in score_reasons and shown in the UI. Change the weights below to tune it
 
 Company score
     Best email verified +25 / catch-all +15 / unverified +8
-    Phone +10
+    Phone +10 (+5 more for a mobile number: WhatsApp / SMS). A number that can't exist counts 0.
     Decision-maker with email +20 (decision-maker without email +8)
     Website crawled +5
     Rating >= 4.5 with 50+ reviews +10 (rating >= 4.0 +5)
@@ -17,7 +17,7 @@ Person score
     Email verified +40 / catch-all +25 / unverified +10 / invalid 0
     Decision-maker +30
     Seniority: owner or C-level +15, director +10, manager +5
-    Phone +5, LinkedIn +5
+    Phone +5 (not for a number that can't exist), LinkedIn +5
     Plus a tenth of the company score (company 70 -> +7)
     Status Lost / Not interested -> score 0
 """
@@ -28,11 +28,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from .models import Company, Contact
 from .people import classify
+from .phones import is_usable
 
 # --- weights -------------------------------------------------------------------------
 
 COMPANY_EMAIL_POINTS = {"valid": 25, "catch_all": 15, "unverified": 8}
 COMPANY_PHONE = 10
+COMPANY_MOBILE = 5  # extra for a mobile number
 COMPANY_DECISION_MAKER_WITH_EMAIL = 20
 COMPANY_DECISION_MAKER_NO_EMAIL = 8
 COMPANY_CRAWLED = 5
@@ -111,8 +113,10 @@ def score_company(company: Company) -> tuple[int, list[str]]:
     grade = _best_company_grade(company)
     if grade:
         points.append((EMAIL_LABELS[grade], COMPANY_EMAIL_POINTS[grade]))
-    if company.phone:
+    if is_usable(company.phone, company.phone_type):
         points.append(("Phone", COMPANY_PHONE))
+        if company.phone_type == "mobile":
+            points.append(("Mobile number", COMPANY_MOBILE))
 
     deciders = [c for c in (company.contacts or []) if c.is_decision_maker]
     if any(_contact_has_email(c) for c in deciders):
@@ -160,7 +164,7 @@ def score_contact(contact: Contact, company: Company | None = None) -> tuple[int
         points.append(("Decision-maker", CONTACT_DECISION_MAKER))
     if contact.seniority in CONTACT_SENIORITY_POINTS:
         points.append((SENIORITY_LABELS[contact.seniority], CONTACT_SENIORITY_POINTS[contact.seniority]))
-    if contact.phone:
+    if is_usable(contact.phone, contact.phone_type):
         points.append(("Phone", CONTACT_PHONE))
     if contact.linkedin_url:
         points.append(("LinkedIn", CONTACT_LINKEDIN))

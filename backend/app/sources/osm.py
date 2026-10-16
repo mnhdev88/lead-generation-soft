@@ -172,6 +172,11 @@ class OpenStreetMapSource(Source):
             progress(f"Searching for '{query}' in {area_name}...")
             elements = self._overpass(client, self._build_query(query, place, limit), progress)
         results = [c for el in elements if (c := self._parse(el, query))]
+        # Few businesses have a country tag, but the searched place tells us the country
+        # (needed to read local phone numbers like "0300 1234567").
+        country = ((place.get("address") or {}).get("country_code") or "").upper() or None
+        for c in results:
+            c.country = c.country or country
         return results[:limit]
 
     def _overpass(self, client: httpx.Client, overpass_query: str, progress: ProgressFn) -> list[dict]:

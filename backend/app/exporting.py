@@ -23,6 +23,8 @@ COMPANY_HEADERS = [
     # Step 4-6
     "email_status", "lead_status", "score", "score_reasons",
     "decision_maker", "decision_maker_title", "decision_maker_email",
+    # Phone check (app/phones.py)
+    "phone_type",
 ]
 
 PEOPLE_HEADERS = [
@@ -88,6 +90,7 @@ def company_table(companies: Iterable[Company]) -> tuple[list[str], list[list[Ce
             statuses.get(c.email) if c.email else None,
             c.lead_status or "new", c.score, "; ".join(c.score_reasons or []),
             dm.full_name if dm else None, dm.title if dm else None, dm.email if dm else None,
+            c.phone_type,
         ])
     return list(COMPANY_HEADERS), rows
 

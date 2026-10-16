@@ -105,6 +105,7 @@ class ContactOut(BaseModel):
     email_confidence: int | None = None
     email_checked_at: UtcDatetime | None = None
     phone: str | None
+    phone_type: str | None = None  # mobile|landline|...|invalid (app/phones.py)
     linkedin_url: str | None
     source: str | None
     source_url: str | None
@@ -135,6 +136,7 @@ class CompanyOut(BaseModel):
     name: str
     category: str | None
     phone: str | None
+    phone_type: str | None = None
     email: str | None
     emails: list[str] = []
     email_statuses: dict[str, str] = {}  # email -> valid|invalid|catch_all|unknown|risky
@@ -242,7 +244,7 @@ class ActivityOut(BaseModel):
     id: int
     company_id: int
     contact_id: int | None
-    kind: str  # note | status
+    kind: str  # note | status | merge
     text: str
     created_at: UtcDatetime
 

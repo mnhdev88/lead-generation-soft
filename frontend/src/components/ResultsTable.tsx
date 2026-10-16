@@ -11,7 +11,7 @@ import {
   sortTeam,
 } from "@/components/CompanyDrawer";
 import { ExportMenu } from "@/components/ExportMenu";
-import { LeadStatusSelect, ScoreBadge, SeniorityBadge } from "@/components/ui";
+import { LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
 import {
   api,
   LEAD_STATUS_LABEL,
@@ -431,7 +431,9 @@ export function ResultsTable({
                         label={`Lead status of ${c.name}`}
                       />
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2">{c.phone ?? <Missing />}</td>
+                    <td className="whitespace-nowrap px-3 py-2">
+                      {c.phone ? <Phone phone={c.phone} type={c.phone_type} link={false} /> : <Missing />}
+                    </td>
                     <td className="px-3 py-2">
                       <EmailsCell company={c} />
                     </td>

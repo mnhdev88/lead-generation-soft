@@ -27,7 +27,8 @@ def test_company_table_keeps_old_csv_columns_first():
            "facebook", "instagram", "linkedin", "platform", "https", "copyright_year", "contacts", "source"]
     assert headers[: len(old)] == old
     assert headers[len(old):] == ["email_status", "lead_status", "score", "score_reasons",
-                                  "decision_maker", "decision_maker_title", "decision_maker_email"]
+                                  "decision_maker", "decision_maker_title", "decision_maker_email",
+                                  "phone_type"]
 
 
 def test_company_row_values():

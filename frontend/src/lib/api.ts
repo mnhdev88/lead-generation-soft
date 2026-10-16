@@ -39,6 +39,8 @@ export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
 };
 
 export type EmailStatus = "valid" | "invalid" | "catch_all" | "unknown" | "risky";
+// What the phone check (backend/app/phones.py) found out about a number.
+export type PhoneType = "mobile" | "landline" | "landline_or_mobile" | "toll_free" | "voip" | "other" | "invalid";
 export const SENIORITIES = ["owner", "c_level", "director", "manager", "professional", "staff"] as const;
 export type Seniority = (typeof SENIORITIES)[number];
 export const SENIORITY_LABEL: Record<Seniority, string> = {
@@ -66,6 +68,7 @@ export type Contact = {
   email_confidence: number | null; // 0-100
   email_checked_at: string | null;
   phone: string | null;
+  phone_type: PhoneType | null;
   linkedin_url: string | null;
   source: string | null;
   source_url: string | null;
@@ -94,6 +97,7 @@ export type Company = {
   name: string;
   category: string | null;
   phone: string | null;
+  phone_type: PhoneType | null;
   email: string | null; // best email
   emails: string[]; // all emails, best first
   email_statuses: Record<string, EmailStatus>; // email -> verification result
@@ -142,7 +146,7 @@ export type Activity = {
   id: number;
   company_id: number;
   contact_id: number | null;
-  kind: "note" | "status";
+  kind: "note" | "status" | "merge";
   text: string;
   created_at: string;
 };

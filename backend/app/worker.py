@@ -30,13 +30,16 @@ from .db import SessionLocal
 from .emails import find_people_emails, learn_pattern, normalize_email, verify_emails
 from .emails.patterns import is_valid_pattern
 from .enrich import crawl_website, make_client
-from .models import Activity, Company, Contact, DomainInfo, JobResult, ListItem, SearchJob
+from .dedupe import merge_if_duplicate
+from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from .people import classify
+from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import hunter
 from .scoring import recompute_scores, rescore
 from .sources import SOURCES, CompanyResult, SourceError
 from .usage import UsageLimitError, get_usage
-from .utils import extract_domain, normalize_url
+from .utils import extract_domain, normalize_url, own_domain
+from .utils import merge_emails as _merge_emails
 
 log = logging.getLogger("worker")
 POLL_SECONDS = 2
@@ -57,18 +60,6 @@ EMAIL_STATUS_RANK = {"valid": 0, "catch_all": 1, "unknown": 2, "risky": 2, "inva
 WEBSITE_EMAIL_CONFIDENCE = 70  # a person's email listed on their own company website
 HUNTER_PATTERN_CONFIDENCE = 75  # Hunter's own guess of a domain's email pattern
 
-# Websites on shared platforms: their domain is not the company's own email domain,
-# so we never guess emails or spend Hunter searches on them.
-SHARED_DOMAINS = {
-    "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com", "youtube.com", "tiktok.com",
-    "google.com", "goo.gl", "g.page", "linktr.ee", "yelp.com", "wa.me", "whatsapp.com",
-}
-SHARED_DOMAIN_SUFFIXES = (
-    ".business.site", ".wixsite.com", ".wordpress.com", ".blogspot.com", ".godaddysites.com",
-    ".squarespace.com", ".webflow.io", ".netlify.app", ".vercel.app", ".weebly.com", ".site123.me",
-)
-
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -79,10 +70,7 @@ def _short(text: str) -> str:
 
 def _company_domain(company: Company) -> str | None:
     """The company's own email domain, or None for e.g. a Facebook page as website."""
-    domain = (company.domain or "").lower()
-    if not domain or domain in SHARED_DOMAINS or domain.endswith(SHARED_DOMAIN_SUFFIXES):
-        return None
-    return domain
+    return own_domain(company.domain)
 
 
 def _classify_contact(contact: Contact) -> None:
@@ -109,6 +97,12 @@ def _upsert_company(session, source: str, r: CompanyResult) -> Company:
     company = session.scalar(
         select(Company).where(Company.source == source, Company.source_ref == r.source_ref)
     )
+    if company is None:
+        # Merged earlier into a company from another source (app/dedupe.py)?
+        alias = session.scalar(
+            select(CompanySource).where(CompanySource.source == source, CompanySource.source_ref == r.source_ref)
+        )
+        company = session.get(Company, alias.company_id) if alias else None
     is_new = company is None
     if is_new:
         company = Company(source=source, source_ref=r.source_ref)
@@ -147,8 +141,15 @@ def _upsert_company(session, source: str, r: CompanyResult) -> Company:
             statuses = company.email_statuses or {}
             usable = [e for e in source_emails if statuses.get(e) != "invalid"]
             fields["email"] = usable[0] if usable else None
+    if not is_new and company.source != source:
+        # The merged company's main source is a better one (Google over OpenStreetMap):
+        # this one only fills the gaps.
+        fields.pop("raw")
+        fields = {k: v for k, v in fields.items() if k in ("emails", "socials") or not getattr(company, k)}
+        fields["socials"] = {**r.socials, **(company.socials or {})}
     for name, value in fields.items():
         setattr(company, name, value)
+    apply_company_phone(company)
     _note_email_origin(company, source_emails, "source")
     session.flush()
     return company
@@ -182,15 +183,23 @@ def run_search_job(session, job: SearchJob) -> None:
             .where(Company.source == source.name, Company.source_ref.in_(refs[i:i + 500]))
         ).all()
     seen = set()
+    merged = 0
     for r in results:
         company = _upsert_company(session, source.name, r)
         rescore(company)
+        # The same business saved before (e.g. found on OpenStreetMap, now on Google)?
+        company, removed_id = merge_if_duplicate(session, company)
+        if removed_id is not None:
+            merged += 1
+            seen.discard(removed_id)
         if company.id not in seen:
             seen.add(company.id)
             session.merge(JobResult(job_id=job.id, company_id=company.id))
     job.result_count = job.total = job.processed = len(seen)
     job.status = "done"
     message = f"Found {len(seen)} businesses."
+    if merged:
+        message += f" Merged {merged} duplicate{'s' if merged != 1 else ''} with businesses already saved."
 
     # "Also find emails": queue a website crawl of these results.
     if job.enrich and seen:
@@ -214,18 +223,6 @@ def run_search_job(session, job: SearchJob) -> None:
 
 
 # ----- enrich (website crawl) jobs -----------------------------------------------
-
-
-def _merge_emails(*lists: list[str]) -> list[str]:
-    """Join email lists keeping the first occurrence of each (lowercase) address,
-    so the order (best first) of the earlier lists wins."""
-    merged: list[str] = []
-    for emails in lists:
-        for e in emails or []:
-            e = (e or "").strip().lower()
-            if e and e not in merged:
-                merged.append(e)
-    return merged
 
 
 def _note_email_origin(company: Company, emails: list[str], origin: str) -> None:
@@ -315,6 +312,7 @@ def _save_people(session, company: Company, people, matched: list[Contact] | Non
         if email and not match.email:
             match.email = email
             match.email_source = "website"
+        apply_contact_phone(match, company)
         _classify_contact(match)
         if matched is not None:
             matched.append(match)
@@ -343,8 +341,11 @@ def _save_crawl(session, company: Company, data) -> int:
     if not company.email and company.emails:
         statuses = company.email_statuses or {}
         company.email = next((e for e in company.emails if statuses.get(e) != "invalid"), None)
-    if not company.phone and data.phones:
-        company.phone = data.phones[0]
+    if data.phones and (not company.phone or company.phone_type == "invalid"):
+        found = best_phone(data.phones, company.country, company.lat, company.lon)
+        if found:
+            company.phone = found
+            apply_company_phone(company)
     # Socials: links we already had win over the crawled ones.
     company.socials = {**(data.socials or {}), **(company.socials or {})}
     # Website facts only from a good crawl: a timed-out or blocked site says nothing about
@@ -875,6 +876,14 @@ def _loop(stop: threading.Event) -> None:
         recover_jobs()
     except Exception:
         log.exception("Could not re-queue interrupted jobs")
+    try:
+        # Phones saved before they were standardised (app/phones.py) are read now (once).
+        with SessionLocal() as session:
+            n_companies, n_contacts = normalize_saved_phones(session)
+        if n_companies or n_contacts:
+            log.info("Standardised the phones of %d companies and %d people", n_companies, n_contacts)
+    except Exception:
+        log.exception("Could not standardise the saved phone numbers")
     try:
         # Leads saved before scores / job-title levels existed get them now (once).
         with SessionLocal() as session:

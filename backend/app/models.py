@@ -5,6 +5,7 @@ contacts    - people working at a company (found by the website crawler / B2B so
 search_jobs - background work: kind="search" (find businesses), "enrich" (crawl websites),
               "emails" (find + verify emails)
 job_results - which companies each search returned
+company_sources - extra source records of a company after duplicates were merged
 email_checks, domains - email verification cache and per-domain facts (Step 4)
 lead_lists, list_items, activities - saved lists, notes and status history (Step 6)
 api_usage   - paid API calls per month, so we never exceed the free allowance
@@ -56,6 +57,11 @@ class Company(Base):
     name: Mapped[str] = mapped_column(String(300), index=True)
     category: Mapped[str | None] = mapped_column(String(100))
     phone: Mapped[str | None] = mapped_column(String(100))
+    # Standard form of `phone` ("+923001234567"), None when it couldn't be read (app/phones.py).
+    # Used to spot the same business found by two sources.
+    phone_e164: Mapped[str | None] = mapped_column(String(20), index=True)
+    # mobile|landline|landline_or_mobile|toll_free|voip|other|invalid, None = don't know
+    phone_type: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(200))  # best email (from source or crawler)
     emails: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))  # all emails found
     website: Mapped[str | None] = mapped_column(String(500))
@@ -117,6 +123,7 @@ class Contact(Base):
     email_confidence: Mapped[int | None] = mapped_column(Integer)  # 0-100
     email_checked_at: Mapped[datetime | None]
     phone: Mapped[str | None] = mapped_column(String(100))
+    phone_type: Mapped[str | None] = mapped_column(String(20))  # same values as Company.phone_type
     linkedin_url: Mapped[str | None] = mapped_column(String(300))
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500))  # page where this person was found
@@ -126,6 +133,21 @@ class Contact(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
+
+
+class CompanySource(Base):
+    """Other source records of a company: when OpenStreetMap and Google both list the same
+    business, the two are merged into one company (app/dedupe.py) and the second one's
+    (source, source_ref) is kept here, so the next search finds the merged company."""
+
+    __tablename__ = "company_sources"
+    __table_args__ = (UniqueConstraint("source", "source_ref", name="uq_company_alias"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    source: Mapped[str] = mapped_column(String(50))
+    source_ref: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class JobResult(Base):

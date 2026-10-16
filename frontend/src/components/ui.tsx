@@ -7,6 +7,7 @@ import {
   SENIORITY_LABEL,
   type EmailStatus,
   type LeadStatus,
+  type PhoneType,
   type Seniority,
 } from "@/lib/api";
 
@@ -21,6 +22,41 @@ const EMAIL_STATUS: Record<EmailStatus, { label: string; cls: string; hint: stri
   unknown: { label: "Unknown", cls: "badge-muted", hint: "The mail server didn't answer clearly." },
   invalid: { label: "Invalid", cls: "badge-danger", hint: "This address does not exist. Don't email it." },
 };
+
+const PHONE_TYPE: Partial<Record<PhoneType, { label: string; cls: string; hint: string }>> = {
+  mobile: { label: "Mobile", cls: "badge-success", hint: "A mobile number: you can also reach it on WhatsApp or by SMS." },
+  landline: { label: "Landline", cls: "badge-muted", hint: "A landline: calls only." },
+  toll_free: { label: "Toll-free", cls: "badge-muted", hint: "A toll-free number, often a call centre." },
+  invalid: { label: "Invalid", cls: "badge-danger", hint: "This number can't exist in its country. Probably a typo." },
+};
+
+/** Phone number with a "Mobile" / "Invalid"... tag, and a WhatsApp link for mobiles. */
+export function Phone({ phone, type, link = true }: { phone: string; type?: PhoneType | null; link?: boolean }) {
+  const tag = type ? PHONE_TYPE[type] : undefined;
+  const digits = phone.replace(/\D/g, "");
+  const whatsapp = link && type === "mobile" && phone.startsWith("+");
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {link && type !== "invalid" ? (
+        <a href={`tel:${phone.replace(/\s/g, "")}`} className="link">
+          {phone}
+        </a>
+      ) : (
+        <span className={type === "invalid" ? "line-through opacity-70" : undefined}>{phone}</span>
+      )}
+      {tag && (
+        <span className={`badge ${tag.cls}`} title={tag.hint}>
+          {tag.label}
+        </span>
+      )}
+      {whatsapp && (
+        <a href={`https://wa.me/${digits}`} target="_blank" rel="noreferrer" className="link text-xs">
+          WhatsApp ↗
+        </a>
+      )}
+    </span>
+  );
+}
 
 /** "Verified" / "Catch-all" / "Invalid"... badge for an email check result. */
 export function EmailStatusBadge({ status, title }: { status: EmailStatus | null | undefined; title?: string }) {

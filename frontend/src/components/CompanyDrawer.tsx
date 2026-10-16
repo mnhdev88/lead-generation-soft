@@ -4,7 +4,7 @@
 // decision-makers with verified emails, website facts, and a notes/activity timeline.
 import { useEffect, useId, useRef, useState } from "react";
 import { AddToListButton } from "@/components/AddToListButton";
-import { EmailStatusBadge, LeadStatusSelect, ScoreBadge, SeniorityBadge } from "@/components/ui";
+import { EmailStatusBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
 import { api, type Activity, type Company, type Contact, type EmailStatus, type Job, type LeadStatus } from "@/lib/api";
 
 // ----- small helpers shared with the results table ---------------------------------
@@ -395,11 +395,7 @@ function CompanySubtitle({ company: c }: { company: Company }) {
       </div>
       {c.address && <div>{c.address}</div>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-        {c.phone && (
-          <a href={`tel:${c.phone}`} className="link">
-            {c.phone}
-          </a>
-        )}
+        {c.phone && <Phone phone={c.phone} type={c.phone_type} />}
         {c.website && (
           <a href={c.website} target="_blank" rel="noreferrer" className="link break-all">
             {c.domain ?? c.website} ↗
@@ -496,11 +492,7 @@ function PeopleSection({ contacts }: { contacts: Contact[] }) {
               {p.title && <div className="text-xs text-[var(--muted)]">{p.title}</div>}
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                 <ContactEmail contact={p} showDetails />
-                {p.phone && (
-                  <a href={`tel:${p.phone}`} className="link">
-                    {p.phone}
-                  </a>
-                )}
+                {p.phone && <Phone phone={p.phone} type={p.phone_type} />}
                 {p.linkedin_url && (
                   <a href={p.linkedin_url} target="_blank" rel="noreferrer" className="link">
                     LinkedIn ↗
@@ -632,7 +624,7 @@ function ActivitySection({
             <li key={a.id} className="text-sm">
               <div className="flex flex-wrap items-center gap-x-2 text-[11px] text-[var(--muted)]">
                 <span className={`badge ${a.kind === "note" ? "badge-accent" : "badge-muted"}`}>
-                  {a.kind === "note" ? "Note" : "Status"}
+                  {a.kind === "note" ? "Note" : a.kind === "merge" ? "Merged" : "Status"}
                 </span>
                 <time dateTime={a.created_at}>{formatDate(a.created_at)}</time>
                 {a.contact_id !== null && names.has(a.contact_id) && <span>· about {names.get(a.contact_id)}</span>}
