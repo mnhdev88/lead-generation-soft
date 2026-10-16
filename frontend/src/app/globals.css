@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f7f8;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --border: #e4e4e7;
+  --muted: #71717a;
+  --muted-bg: #f4f4f5;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --accent-fg: #ffffff; /* text on a solid accent background (primary buttons) */
+  --success: #15803d;
+  --success-soft: #dcfce7;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --warn: #b45309;
+  --warn-soft: #fef3c7;
+  /* Native controls (checkboxes, scrollbars, <select> popups) follow the light/dark theme. */
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0b0b0d;
+    --foreground: #ececef;
+    --card: #141417;
+    --border: #27272a;
+    --muted: #a1a1aa;
+    --muted-bg: #1c1c20;
+    --accent: #818cf8;
+    --accent-soft: #1e1b4b;
+    --accent-fg: #0b0b0d; /* dark text: white on the light indigo is too faint (about 3:1) */
+    --success: #4ade80;
+    --success-soft: #052e16;
+    --danger: #f87171;
+    --danger-soft: #450a0a;
+    --warn: #fbbf24;
+    --warn-soft: #422006;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-[var(--border)] bg-[var(--card)] p-4;
+  }
+  .label {
+    @apply text-sm font-medium;
+  }
+  .input {
+    @apply w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)];
+  }
+  .chip {
+    @apply rounded-full border border-[var(--border)] px-2.5 py-0.5 text-xs capitalize text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)];
+  }
+  .btn-primary {
+    @apply rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-[var(--muted-bg)] disabled:pointer-events-none disabled:opacity-40;
+  }
+  .link {
+    @apply text-[var(--accent)] hover:underline;
+  }
+  /* Small action button used inside tables and job cards. */
+  .btn-xs {
+    @apply rounded-md border border-[var(--border)] px-2 py-0.5 text-xs font-medium whitespace-nowrap hover:border-[var(--accent)] hover:text-[var(--accent)] disabled:pointer-events-none disabled:opacity-40;
+  }
+  /* Small coloured label. Combine with a colour, e.g. "badge badge-warn". */
+  .badge {
+    @apply inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap;
+  }
+  .badge-muted {
+    @apply bg-[var(--muted-bg)] text-[var(--muted)];
+  }
+  .badge-accent {
+    @apply bg-[var(--accent-soft)] text-[var(--accent)];
+  }
+  .badge-success {
+    @apply bg-[var(--success-soft)] text-[var(--success)];
+  }
+  .badge-danger {
+    @apply bg-[var(--danger-soft)] text-[var(--danger)];
+  }
+  .badge-warn {
+    @apply bg-[var(--warn-soft)] text-[var(--warn)];
+  }
+  /* Thin progress bar: an outer track with an inner fill whose width is set inline. */
+  .progress {
+    @apply h-1.5 w-full overflow-hidden rounded-full bg-[var(--muted-bg)];
+  }
+  .progress > div {
+    @apply h-full rounded-full bg-[var(--accent)] transition-[width] duration-500;
+  }
+  /* Checkbox used for row selection in tables. */
+  .checkbox {
+    @apply h-4 w-4 cursor-pointer accent-[var(--accent)];
+  }
+}
+
+/* Slide-in side panel (company details). Respects "reduce motion". */
+@keyframes drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.drawer-panel {
+  animation: drawer-in 180ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer-panel {
+    animation: none;
+  }
+}

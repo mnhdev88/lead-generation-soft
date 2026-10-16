@@ -1,0 +1,21 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Local database (contains lead data - never commit)
+backend/data/
+
+# Secrets
+.env
+.env.*
+!.env.example
+# Google service-account key files (README "Google Sheets export" puts them in backend/)
+backend/*.json
+.pytest_cache/
+# Profiler output
+*.out
+
+# Node
+frontend/node_modules/
+frontend/.next/
