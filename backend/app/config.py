@@ -68,6 +68,29 @@ EMAIL_CHECK_MAX_AGE_DAYS = int(os.getenv("EMAIL_CHECK_MAX_AGE_DAYS", "30"))  # r
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "").strip()
 HUNTER_MONTHLY_LIMIT = int(os.getenv("HUNTER_MONTHLY_LIMIT", "25"))
 
+# --- Finding owners / decision-makers ("Find owner") ---
+# We never open linkedin.com ourselves. Instead a web search API is asked for LinkedIn profiles
+# ("site:linkedin.com/in owner "Smile Dental" Austin") and only the search results are read.
+# WEB_SEARCH_PROVIDER = "brave" or "serper":
+#   brave  - Brave Search API: about $5 of free credit a month (~1,000 searches), then $5 per 1,000.
+#   serper - Serper.dev (Google results): 2,500 free searches once per account, then about $1 per 1,000.
+# (Google's own Custom Search API is closed to new users and shuts down on 1 Jan 2027, so it is not offered.)
+WEB_SEARCH_PROVIDER = os.getenv("WEB_SEARCH_PROVIDER", "brave").strip().lower()
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "").strip()
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+# Hard cap on web searches per calendar month (1 or 2 searches per company looked up).
+WEB_SEARCH_MONTHLY_LIMIT = int(os.getenv("WEB_SEARCH_MONTHLY_LIMIT", "900"))
+# Apollo.io (optional backup when the web search finds no one). Empty key = Apollo off.
+# Searching Apollo's people is free; revealing one person's email costs 1 credit.
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "").strip()
+APOLLO_MONTHLY_LIMIT = int(os.getenv("APOLLO_MONTHLY_LIMIT", "50"))  # credits per month
+# "Find owner" skips a business looked up less than this many days ago (saves searches/credits).
+PEOPLE_RECHECK_DAYS = int(os.getenv("PEOPLE_RECHECK_DAYS", "90"))
+# 1 = also spend a second web search per business on its LinkedIn company page. Off by default:
+# the website crawl usually finds that link, and it would halve how many businesses the
+# monthly web search limit covers.
+LINKEDIN_COMPANY_PAGE_SEARCH = os.getenv("LINKEDIN_COMPANY_PAGE_SEARCH", "0") == "1"
+
 # --- Google Sheets export (Step 6, optional) ---
 # Path to a Google service-account JSON key file. Share your sheet with that account's email.
 GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE", "").strip()

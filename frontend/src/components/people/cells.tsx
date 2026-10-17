@@ -10,6 +10,7 @@ const EMAIL_SOURCE_LABEL: Record<string, string> = {
   website: "website",
   pattern: "pattern guess",
   hunter: "Hunter.io",
+  apollo: "Apollo.io",
 };
 
 /** Link to a company on the Search page, which opens its detail panel. */

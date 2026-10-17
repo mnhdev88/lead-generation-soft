@@ -188,17 +188,23 @@ export function JobList({
   );
 }
 
-const KIND_TITLE: Record<Job["kind"], string> = { search: "Search", enrich: "Website crawl", emails: "Email check" };
+const KIND_TITLE: Record<Job["kind"], string> = {
+  search: "Search",
+  enrich: "Website crawl",
+  emails: "Email check",
+  people: "Finding owners",
+};
 
-/** One website-crawl or email-check job: label, status, and a progress bar while it runs. */
+/** One website-crawl, email-check or owner-lookup job: label, status, and a progress bar while it runs. */
 function ChildJobInfo({ job, title }: { job: Job; title: string }) {
   const pct = job.total > 0 ? Math.round((job.processed / job.total) * 100) : 0;
   const isEmails = job.kind === "emails";
+  const isPeople = job.kind === "people";
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
-          {isEmails ? <EnvelopeIcon /> : <GlobeIcon />}
+          {isEmails ? <EnvelopeIcon /> : isPeople ? <PersonIcon /> : <GlobeIcon />}
           <span className="truncate">{title}</span>
         </span>
         <span
@@ -208,14 +214,18 @@ function ChildJobInfo({ job, title }: { job: Job; title: string }) {
               ? undefined
               : isEmails
                 ? "Businesses with a deliverable email (verified, or on a server that accepts every address)"
-                : "Websites that gave at least one email"
+                : isPeople
+                  ? "Businesses where we found an owner or decision-maker"
+                  : "Websites that gave at least one email"
           }
         >
           {job.status !== "done"
             ? job.status
             : isEmails
               ? `${job.result_count} deliverable`
-              : `${job.result_count} with email`}
+              : isPeople
+                ? `${job.result_count} found`
+                : `${job.result_count} with email`}
         </span>
       </div>
       {job.status === "running" && job.total > 0 && (
@@ -257,6 +267,15 @@ function EnvelopeIcon() {
     <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" fill="none" stroke="currentColor" strokeWidth="1.4">
       <rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.5" />
       <path d="m2.25 4 5.75 4.5L13.75 4" />
+    </svg>
+  );
+}
+
+function PersonIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <circle cx="8" cy="5.25" r="2.75" />
+      <path d="M2.75 14c.6-2.9 2.7-4.25 5.25-4.25s4.65 1.35 5.25 4.25" />
     </svg>
   );
 }

@@ -18,12 +18,16 @@ from .sources.base import SourceError
 PROVIDERS: dict[str, int] = {
     "google_places": config.GOOGLE_PLACES_MONTHLY_LIMIT,
     "hunter": config.HUNTER_MONTHLY_LIMIT,
+    "web_search": config.WEB_SEARCH_MONTHLY_LIMIT,  # Brave or Serper searches (finding owners)
+    "apollo": config.APOLLO_MONTHLY_LIMIT,  # Apollo.io credits (1 per email revealed)
 }
 
 # Friendly names for error messages.
 LABELS: dict[str, str] = {
     "google_places": "Google Places",
     "hunter": "Hunter.io",
+    "web_search": "Web search",
+    "apollo": "Apollo.io",
 }
 
 

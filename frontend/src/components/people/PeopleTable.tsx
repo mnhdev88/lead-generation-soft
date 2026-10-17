@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { AddToListButton } from "@/components/AddToListButton";
 import { ExportMenu } from "@/components/ExportMenu";
 import { CompanyCell, Missing, PersonEmailCell, PersonNameCell, PersonTitleCell } from "@/components/people/cells";
-import { LeadStatusSelect, ScoreBadge } from "@/components/ui";
+import { FindOnLinkedIn, LeadStatusSelect, ScoreBadge } from "@/components/ui";
 import {
   api,
   LEAD_STATUS_LABEL,
@@ -424,6 +424,9 @@ export function PeopleTable({
                   </td>
                   <td className="px-3 py-2">
                     <PersonNameCell person={p} />
+                    {!p.linkedin_url && p.full_name && (
+                      <FindOnLinkedIn name={p.full_name} companyName={p.company?.name} />
+                    )}
                   </td>
                   <td className="max-w-60 px-3 py-2">
                     <PersonTitleCell person={p} />

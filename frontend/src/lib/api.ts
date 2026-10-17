@@ -4,7 +4,8 @@
 export const API_URL = "";
 
 export type JobStatus = "queued" | "running" | "done" | "failed";
-export type JobKind = "search" | "enrich" | "emails"; // enrich = website crawl; emails = find + verify emails
+// enrich = website crawl; emails = find + verify emails; people = look up owners (LinkedIn search results / Apollo.io)
+export type JobKind = "search" | "enrich" | "emails" | "people";
 
 export type Job = {
   id: number;
@@ -15,7 +16,14 @@ export type Job = {
   limit: number;
   enrich: boolean; // search jobs: crawl websites automatically when the search finishes
   parent_job_id: number | null; // enrich/emails jobs: the job whose results they work on
-  params: { company_ids?: number[]; force?: boolean; find_emails?: boolean; titles?: string[]; crawl?: boolean };
+  params: {
+    company_ids?: number[];
+    force?: boolean;
+    find_emails?: boolean;
+    titles?: string[];
+    crawl?: boolean;
+    use_apollo?: boolean; // people jobs: also ask Apollo.io when the web search finds no one
+  };
   status: JobStatus;
   progress_message: string | null;
   total: number;
@@ -64,13 +72,13 @@ export type Contact = {
   is_decision_maker: boolean;
   email: string | null;
   email_status: EmailStatus | null;
-  email_source: string | null; // website | pattern | hunter
+  email_source: string | null; // website | pattern | hunter | apollo
   email_confidence: number | null; // 0-100
   email_checked_at: string | null;
   phone: string | null;
   phone_type: PhoneType | null;
   linkedin_url: string | null;
-  source: string | null;
+  source: string | null; // website | hunter | linkedin_search | apollo
   source_url: string | null;
   lead_status: LeadStatus;
   score: number | null;
@@ -543,6 +551,28 @@ export type NewJob = {
 
 type QueryValue = string | number | boolean | undefined;
 
+// ----- LinkedIn search links -----
+// We never read LinkedIn pages ourselves: these links open LinkedIn's own search in your
+// browser (you need to be logged in to LinkedIn there).
+
+/** LinkedIn people search for a name at a company, e.g. "Jane Smith Smile Dental". */
+export function linkedinPeopleSearchUrl(name: string | null | undefined, companyName?: string | null) {
+  const keywords = [name, companyName].map((x) => (x ?? "").trim()).filter(Boolean).join(" ");
+  return `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(keywords)}`;
+}
+
+/** LinkedIn company search for a business name. */
+export function linkedinCompanySearchUrl(companyName: string) {
+  return `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(companyName.trim())}`;
+}
+
+/** The company's saved LinkedIn page (socials.linkedin) as a full https link, or null. */
+export function savedLinkedinUrl(socials: Record<string, string> | null | undefined) {
+  const url = (socials?.linkedin ?? "").trim();
+  if (!url) return null;
+  return url.startsWith("http") ? url : `https://${url}`;
+}
+
 /** Sends you to the login page, then back here once logged in. */
 export function goToLogin() {
   if (window.location.pathname === "/login") return;
@@ -614,6 +644,10 @@ export const api = {
     request<Job>("/api/companies/find-emails", post({ company_ids: companyIds, ...opts })),
   findDecisionMakers: (companyId: number) =>
     request<Job>("/api/companies/find-emails", post({ company_ids: [companyId], crawl: true })),
+  // Look up the owners of hand-picked companies in LinkedIn search results (and Apollo.io as a
+  // backup), then find their emails. Companies that already have a decision-maker are skipped.
+  findPeople: (companyIds: number[], opts: { use_apollo?: boolean; find_emails?: boolean } = {}) =>
+    request<Job>("/api/companies/find-people", post({ company_ids: companyIds, ...opts })),
 
   // ----- companies -----
   listCompanies: (filters: CompanyFilters, limit: number, offset: number) =>

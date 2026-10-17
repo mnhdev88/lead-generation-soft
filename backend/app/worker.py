@@ -1,12 +1,15 @@
 """Background worker: picks up queued jobs and runs them one at a time.
 
-Three kinds of job:
+Four kinds of job:
   - "search": ask a source (OpenStreetMap, Google...) for businesses and save them.
   - "enrich": crawl the websites of companies to find emails, phones, socials and people.
   - "emails": find + verify emails of companies and their people (Step 4), optionally
               crawling the websites first ("Find decision-makers").
+  - "people": find the owner / decision-maker of companies ("Find owner"): LinkedIn profiles
+              via a web search (never opening linkedin.com), Apollo.io as a backup.
 
-Chain: search (enrich=True) -> enrich job -> (params.find_emails) -> emails job.
+Chains: search (enrich=True) -> enrich job -> (params.find_emails) -> emails job;
+        people -> (params.find_emails) -> emails job.
 
 It runs as a thread inside the API process to keep things simple. When the app
 becomes a SaaS with many users, this moves to a separate process + Redis queue.
@@ -34,9 +37,9 @@ from .enrich import crawl_website, make_client
 from .dedupe import merge_if_duplicate
 from .intent import apply_intent
 from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
-from .people import classify
+from .people import classify, linkedin
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
-from .providers import hunter
+from .providers import apollo, hunter, websearch
 from .scoring import recompute_scores, rescore
 from .sizing import branch_counts, refresh_branch_sizes, size_saved_companies
 from .sources import SOURCES, CompanyResult, SourceError
@@ -62,6 +65,11 @@ EMAIL_JOB_THREADS = 4
 EMAIL_STATUS_RANK = {"valid": 0, "catch_all": 1, "unknown": 2, "risky": 2, "invalid": 3}
 WEBSITE_EMAIL_CONFIDENCE = 70  # a person's email listed on their own company website
 HUNTER_PATTERN_CONFIDENCE = 75  # Hunter's own guess of a domain's email pattern
+# "people" jobs ("Find owner")
+APOLLO_VERIFIED_CONFIDENCE = 80  # an email Apollo.io says it verified
+APOLLO_PEOPLE_PER_COMPANY = 2  # Apollo lookups per company (1 credit each)
+WEB_SEARCH_RESULTS = 10  # results read per web search
+WEB_SEARCH_MAX_FAILURES = 3  # web search errors in a row before the job stops using it
 
 # While no job is waiting, older companies get a size estimate and a PPP lookup, this many
 # at a time (a job the user starts then waits a few seconds at most).
@@ -926,6 +934,227 @@ def run_emails_job(session, job: SearchJob) -> None:
     job.progress_message = _short(message)
 
 
+# ----- people ("Find owner") jobs -------------------------------------------------
+
+
+def _same_linkedin(a: str | None, b: str | None) -> bool:
+    """Two links to the same LinkedIn profile (www./pk., http/https, trailing / ignored)."""
+    def norm(url: str) -> str:
+        return linkedin.profile_url(url.replace("http://", "https://", 1)) or url.strip().lower().rstrip("/")
+
+    return bool(a and b) and norm(a) == norm(b)
+
+
+def _find_person(company: Company, name: str | None, email: str | None, linkedin_url: str | None) -> Contact | None:
+    """An existing contact with the same LinkedIn profile, else the same email or full name."""
+    if linkedin_url:
+        for c in company.contacts:
+            if _same_linkedin(c.linkedin_url, linkedin_url):
+                return c
+    return _find_contact(company, name, email)
+
+
+def _apollo_email_status(status: str | None) -> str | None:
+    """Apollo's email_status -> ours: "verified" -> "valid", "unavailable"/none -> None,
+    anything else ("extrapolated", "guessed"...) -> "unknown" (the email check decides)."""
+    status = (status or "").strip().lower()
+    if status == "verified":
+        return "valid"
+    if status in ("", "unavailable"):
+        return None
+    return "unknown"
+
+
+def _save_found_person(company: Company, *, name: str, title: str | None, linkedin_url: str | None,
+                       source_url: str | None, source: str, email: str | None = None,
+                       email_status: str | None = None) -> tuple[Contact, bool]:
+    """Add one person found by the web search ("linkedin_search") or Apollo ("apollo"), or fill
+    the empty fields of the same person saved earlier. Returns (contact, newly created)."""
+    name = " ".join((name or "").split())
+    email = (email or "").strip().lower() or None
+    contact = _find_person(company, name, email, linkedin_url)
+    created = contact is None
+    if created:
+        contact = Contact(full_name=name or None, source=source)
+        contact.first_name, contact.last_name = _split_name(name) if name else (None, None)
+        company.contacts.append(contact)
+    # Fill only the empty fields, so a lookup never overwrites what we knew.
+    for name_, value in (("title", title), ("linkedin_url", linkedin_url), ("source_url", source_url)):
+        if value and not getattr(contact, name_):
+            setattr(contact, name_, value)
+    if email and not contact.email:
+        contact.email = email
+        contact.email_source = "apollo"
+        contact.email_status = _apollo_email_status(email_status)
+        contact.email_confidence = APOLLO_VERIFIED_CONFIDENCE if contact.email_status == "valid" else None
+    _classify_contact(contact)
+    return contact, created
+
+
+def _has_decision_maker(company: Company) -> bool:
+    return any(c.is_decision_maker for c in company.contacts)
+
+
+def _looked_up_recently(company: Company) -> bool:
+    """Looked up by "Find owner" less than PEOPLE_RECHECK_DAYS ago (found no one then)."""
+    when = company.people_searched_at
+    if when is None:
+        return False
+    if when.tzinfo is None:  # SQLite gives dates back without a time zone
+        when = when.replace(tzinfo=timezone.utc)
+    return _now() - when < timedelta(days=config.PEOPLE_RECHECK_DAYS)
+
+
+def run_people_job(session, job: SearchJob) -> None:
+    """Find the owner / decision-maker of companies ("Find owner").
+    For each company without a decision-maker yet:
+      1. a web search for LinkedIn profiles (app/people/linkedin.py reads the results; we never
+         open linkedin.com), plus one for the company's LinkedIn page when we don't have it;
+      2. still no decision-maker: Apollo.io (params.use_apollo), when the company has its own domain.
+    Then (params.find_emails) an emails job for the companies with new people.
+    job.result_count = companies where at least one decision-maker was found or added."""
+    params = job.params or {}
+    use_apollo = params.get("use_apollo", True) is not False
+    force = params.get("force") is True
+    web_ok = websearch.available()
+    apollo_ok = use_apollo and apollo.available()
+    if not web_ok and not apollo_ok:
+        raise SourceError(
+            "Finding owners needs a web search key (BRAVE_API_KEY or SERPER_API_KEY) or an "
+            "APOLLO_API_KEY in backend/.env. Add one and restart the backend."
+        )
+    companies = _job_targets(session, job)
+    job.total = len(companies)
+    job.processed = 0
+    job.result_count = 0
+    session.commit()
+
+    stats = {"skipped": 0, "linkedin": 0, "apollo": 0, "pages": 0, "searches": 0, "search_errors": 0,
+             "failed": 0}
+    found_ids: list[int] = []  # companies where a decision-maker was found
+    email_ids: list[int] = []  # companies with people added or updated: their emails are checked next
+    notes: list[str] = []  # why a service was stopped during the job
+    web_failures = 0  # web search errors in a row
+    stopped_after = None  # companies done when every service had stopped
+
+    for i, company in enumerate(companies, start=1):
+        if not web_ok and not apollo_ok:
+            stopped_after = i - 1
+            break
+        job.progress_message = _short(f"Looking up owners: {i} of {len(companies)}...")
+        session.commit()
+        try:
+            if _has_decision_maker(company) or (not force and _looked_up_recently(company)):
+                stats["skipped"] += 1
+            else:
+                touched = False
+                looked_up = False  # a lookup finished (so "Find owner" can skip it for a while)
+                # 1. LinkedIn profiles via the web search
+                if web_ok:
+                    try:
+                        stats["searches"] += 1
+                        results = websearch.search(linkedin.people_query(company), WEB_SEARCH_RESULTS)
+                        for p in linkedin.parse_profiles(results, company):
+                            _save_found_person(company, name=p.full_name, title=p.title, linkedin_url=p.linkedin_url,
+                                               source_url=p.source_url, source="linkedin_search")
+                            stats["linkedin"] += 1
+                            touched = True
+                        if config.LINKEDIN_COMPANY_PAGE_SEARCH and not (company.socials or {}).get("linkedin"):
+                            stats["searches"] += 1
+                            results = websearch.search(linkedin.company_page_query(company), WEB_SEARCH_RESULTS)
+                            page = linkedin.parse_company_page(results, company)
+                            if page:
+                                # reassign: SQLAlchemy doesn't see in-place JSON changes
+                                company.socials = {**(company.socials or {}), "linkedin": page}
+                                stats["pages"] += 1
+                        web_failures = 0
+                        looked_up = True
+                    except UsageLimitError:
+                        web_ok = False
+                        notes.append("Web search monthly limit reached")
+                    except SourceError as e:
+                        stats["search_errors"] += 1
+                        web_failures += 1
+                        if web_failures >= WEB_SEARCH_MAX_FAILURES:
+                            web_ok = False
+                            notes.append(f"Web search stopped: {e}")
+                # 2. Apollo.io as a backup
+                domain = _company_domain(company)
+                if apollo_ok and domain and not _has_decision_maker(company):
+                    try:
+                        for p in apollo.find_decision_makers(domain, limit=APOLLO_PEOPLE_PER_COMPANY):
+                            _save_found_person(company, name=p.get("full_name"), title=p.get("title"),
+                                               linkedin_url=p.get("linkedin_url"), source_url=None, source="apollo",
+                                               email=p.get("email"), email_status=p.get("email_status"))
+                            stats["apollo"] += 1
+                            touched = True
+                        looked_up = True
+                    except UsageLimitError:
+                        apollo_ok = False
+                        notes.append("Apollo.io monthly limit reached")
+                    except SourceError as e:
+                        apollo_ok = False
+                        notes.append(f"Apollo.io stopped: {e}")
+                if looked_up:
+                    company.people_searched_at = _now()
+                if touched:
+                    email_ids.append(company.id)
+                if _has_decision_maker(company):
+                    found_ids.append(company.id)
+                rescore(company)
+            session.commit()
+        except Exception:  # one bad company never stops the job
+            log.exception("Looking up the owner of company %s failed", company.id)
+            session.rollback()
+            stats["failed"] += 1
+        job.processed += 1
+        job.result_count = len(found_ids)
+        session.commit()
+
+    looked_up = job.processed
+    message = (
+        f"Looked up owners of {looked_up} compan{'y' if looked_up == 1 else 'ies'}: {len(found_ids)} with a "
+        f"decision-maker found ({stats['linkedin']} via LinkedIn search, {stats['apollo']} via Apollo)"
+    )
+    extras = []
+    if stats["skipped"]:
+        extras.append(f"{stats['skipped']} already had one, skipped")
+    if stats["pages"]:
+        extras.append(f"{stats['pages']} LinkedIn company pages saved")
+    if stats["search_errors"]:
+        extras.append(f"{stats['search_errors']} searches failed")
+    if stats["failed"]:
+        extras.append(f"{stats['failed']} failed")
+    if extras:
+        message += f"; {'; '.join(extras)}"
+    message += "."
+    if stopped_after is not None:
+        message += (f" Stopped after {stopped_after} of {len(companies)} companies "
+                    f"({'; '.join(notes)}); kept what was found.")
+    elif notes:
+        message += f" {'; '.join(notes)}."
+
+    # Then find + verify the emails of the people found.
+    if params.get("find_emails", True) is not False and email_ids:
+        session.add(
+            SearchJob(
+                kind="emails",
+                query=job.query,
+                location=job.location,
+                source="emails",
+                limit=len(email_ids),
+                parent_job_id=job.id,
+                params={"company_ids": email_ids, "force": False, "crawl": False, "use_hunter": True},
+                progress_message="Waiting in queue...",
+            )
+        )
+        message = f"Email check queued. {message}" if len(message) > MESSAGE_MAX - 25 else f"{message} Email check queued."
+
+    job.result_count = len(found_ids)
+    job.status = "done"
+    job.progress_message = _short(message)
+
+
 # ----- the job loop --------------------------------------------------------------
 
 
@@ -943,6 +1172,8 @@ def run_job(job_id: int) -> None:
                 run_enrich_job(session, job)
             elif job.kind == "emails":
                 run_emails_job(session, job)
+            elif job.kind == "people":
+                run_people_job(session, job)
             else:
                 run_search_job(session, job)
         except SourceError as e:
@@ -969,15 +1200,20 @@ def _mark_failed(job_id: int, error: str) -> None:
 
 
 INTERRUPTED_PAID_SEARCH = "Interrupted by a restart — run the search again (to avoid paying twice)"
+INTERRUPTED_PAID_LOOKUP = "Interrupted by a restart — run the owner lookup again (to avoid paying twice)"
 
 
 def recover_jobs() -> None:
-    """Jobs left "running" by a crash/restart get another try - except Google searches:
-    re-running them would spend paid requests a second time, so they are marked failed."""
+    """Jobs left "running" by a crash/restart get another try - except Google searches and
+    owner lookups ("people": web search / Apollo): re-running them would spend paid requests
+    a second time, so they are marked failed."""
     with SessionLocal() as session:
         for job in session.scalars(select(SearchJob).where(SearchJob.status == "running")):
             if job.kind == "search" and job.source == "google":
                 job.status, job.error, job.finished_at = "failed", INTERRUPTED_PAID_SEARCH, _now()
+                job.progress_message = None
+            elif job.kind == "people":
+                job.status, job.error, job.finished_at = "failed", INTERRUPTED_PAID_LOOKUP, _now()
                 job.progress_message = None
             else:
                 job.status = "queued"

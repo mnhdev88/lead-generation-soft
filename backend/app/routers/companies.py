@@ -8,6 +8,7 @@ from .. import exporting
 from ..db import get_session
 from ..models import Activity, Company, Contact, JobResult, ListItem, SearchJob
 from ..people import SENIORITY_RANK
+from ..providers import apollo, websearch
 from ..schemas import (
     ActivityOut,
     CompanyOut,
@@ -15,6 +16,7 @@ from ..schemas import (
     CompanyUpdate,
     EnrichCompaniesRequest,
     FindEmailsRequest,
+    FindPeopleRequest,
     JobOut,
     NoteCreate,
 )
@@ -222,6 +224,32 @@ def find_emails(body: FindEmailsRequest, session: Session = Depends(get_session)
         source="emails",
         limit=len(found),
         params={"company_ids": found, "force": body.force, "crawl": body.crawl, "use_hunter": body.use_hunter},
+        progress_message="Waiting in queue...",
+    )
+    session.add(job)
+    session.commit()
+    return job
+
+
+@router.post("/find-people", response_model=JobOut, status_code=201)
+def find_people(body: FindPeopleRequest, session: Session = Depends(get_session)):
+    """Queue a "Find owner" job for hand-picked companies: LinkedIn profiles via a web search,
+    Apollo.io as a backup (use_apollo), then an email check of the people found (find_emails)."""
+    if not websearch.available() and not (body.use_apollo and apollo.available()):
+        raise HTTPException(
+            400,
+            "Finding owners needs a web search key (BRAVE_API_KEY or SERPER_API_KEY) or an "
+            "APOLLO_API_KEY in backend/.env. Add one and restart the backend.",
+        )
+    found = _selected_ids(session, body.company_ids)
+    job = SearchJob(
+        kind="people",
+        query=_selected_label(len(found)),
+        location="",
+        source="people",
+        limit=len(found),
+        params={"company_ids": found, "use_apollo": body.use_apollo, "find_emails": body.find_emails,
+                "force": body.force},
         progress_message="Waiting in queue...",
     )
     session.add(job)

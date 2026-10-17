@@ -7,6 +7,7 @@ import {
   intentBadgeSpeech,
   LEAD_STATUS_LABEL,
   LEAD_STATUSES,
+  linkedinPeopleSearchUrl,
   NO_SIZE_INFO_REASON,
   OFFER_LABEL,
   SENIORITY_LABEL,
@@ -224,5 +225,21 @@ export function LeadStatusSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+/** "Find on LinkedIn ↗": opens LinkedIn's own people search for this person in a new tab.
+ *  Only for people we have a name for but no LinkedIn profile link. */
+export function FindOnLinkedIn({ name, companyName }: { name: string; companyName?: string | null }) {
+  return (
+    <a
+      href={linkedinPeopleSearchUrl(name, companyName)}
+      target="_blank"
+      rel="noreferrer"
+      className="link text-xs"
+      title="Search LinkedIn for this person (opens LinkedIn in a new tab; you may need to log in there)"
+    >
+      Find on LinkedIn ↗
+    </a>
   );
 }

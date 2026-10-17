@@ -314,3 +314,23 @@ before this feature get the new website facts when they are crawled again.
 Settings in `backend/.env` (see `.env.example`): `GOOGLE_PLACES_REVIEWS=1` (reviews + photos;
 Google bills $40 instead of $35 per 1,000 searches, the first 1,000 a month are free either way)
 and `PAGESPEED_API_KEY=` (free key, 25,000 tests a day; without one Google mostly refuses).
+
+## Find owners (LinkedIn search + Apollo)
+
+**Find owner** (in a business's panel) or **Find owners** (for the ticked rows) looks up the owner /
+decision-maker of a business, then finds and checks their email with the normal email finder.
+We never scrape LinkedIn (its terms forbid it, accounts get banned):
+
+1. **Web search** for LinkedIn profiles, e.g. `site:linkedin.com/in "owner" "Smile Dental" Austin`.
+   A person is only kept when the result clearly names this business as their current employer
+   and their title is a decision-maker (owner, founder, president, CEO, partner...).
+   Needs a key in `backend/.env`: `BRAVE_API_KEY` (Brave Search API, about $5 of free credit a
+   month = ~1,000 searches) or `SERPER_API_KEY` with `WEB_SEARCH_PROVIDER=serper` (Serper.dev,
+   2,500 free searches once). Capped by `WEB_SEARCH_MONTHLY_LIMIT` (900). One search per business.
+2. **Apollo.io (optional backup)** when the search finds no one: `APOLLO_API_KEY` from your Apollo
+   account. Finding people is free; getting a person's name, email and LinkedIn costs 1 credit
+   (max 2 people per business, `APOLLO_MONTHLY_LIMIT` credits a month). Phone numbers are never
+   requested (8 credits each).
+
+A business is not looked up again for 90 days (`PEOPLE_RECHECK_DAYS`). Every person and business
+also has a **Find on LinkedIn** link, which opens LinkedIn's own search in your browser.

@@ -7,10 +7,13 @@ import { test } from "node:test";
 
 import {
   intentBadgeSpeech,
+  linkedinCompanySearchUrl,
+  linkedinPeopleSearchUrl,
   mayUseTagManager,
   notFoundText,
   oldCrawlNote,
   salesFactRows,
+  savedLinkedinUrl,
   siteFactsUsable,
   websiteNotRead,
 } from "./api.ts";
@@ -132,4 +135,36 @@ test("intent badge speech has the score, hot, the reasons and the not-read hint"
   );
   assert.equal(intentBadgeSpeech({ score: 10 }), "Intent 10 out of 100");
   assert.match(intentBadgeSpeech({ score: 0, unchecked: true }), /Website not read yet/);
+});
+
+test("LinkedIn people search link has the name and company, safely encoded", () => {
+  assert.equal(
+    linkedinPeopleSearchUrl("Jane Smith", "Smile Dental"),
+    "https://www.linkedin.com/search/results/people/?keywords=Jane%20Smith%20Smile%20Dental",
+  );
+  // & # ? / are encoded, so they cannot break or add URL parameters.
+  assert.equal(
+    linkedinPeopleSearchUrl("Ann O'Neil", "Smith & Sons #1 / Plumbing?"),
+    "https://www.linkedin.com/search/results/people/?keywords=Ann%20O'Neil%20Smith%20%26%20Sons%20%231%20%2F%20Plumbing%3F",
+  );
+  // No company: just the name; extra spaces trimmed.
+  assert.equal(
+    linkedinPeopleSearchUrl("  José Pérez ", null),
+    "https://www.linkedin.com/search/results/people/?keywords=Jos%C3%A9%20P%C3%A9rez",
+  );
+});
+
+test("LinkedIn company search link is encoded", () => {
+  assert.equal(
+    linkedinCompanySearchUrl("Smith & Sons Plumbing"),
+    "https://www.linkedin.com/search/results/companies/?keywords=Smith%20%26%20Sons%20Plumbing",
+  );
+});
+
+test("saved LinkedIn page link is used when present", () => {
+  assert.equal(savedLinkedinUrl({ linkedin: "https://www.linkedin.com/company/acme" }), "https://www.linkedin.com/company/acme");
+  assert.equal(savedLinkedinUrl({ linkedin: "linkedin.com/company/acme" }), "https://linkedin.com/company/acme");
+  assert.equal(savedLinkedinUrl({ facebook: "https://facebook.com/acme" }), null);
+  assert.equal(savedLinkedinUrl({ linkedin: "  " }), null);
+  assert.equal(savedLinkedinUrl(null), null);
 });

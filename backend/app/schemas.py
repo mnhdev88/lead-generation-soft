@@ -53,6 +53,16 @@ class FindEmailsRequest(BaseModel):
     use_hunter: bool = True  # use Hunter.io as a backup when configured (counts against its cap)
 
 
+class FindPeopleRequest(BaseModel):
+    """Find the owner / decision-maker of companies ("Find owner"): LinkedIn profiles via a web
+    search, then Apollo.io as a backup, then (optionally) their emails."""
+
+    company_ids: list[int] = Field(min_length=1, max_length=500)
+    use_apollo: bool = True  # use Apollo.io when the web search finds no one (costs Apollo credits)
+    find_emails: bool = True  # afterwards queue an email check for the companies with new people
+    force: bool = False  # look up again businesses already looked up recently (PEOPLE_RECHECK_DAYS)
+
+
 class FindEmailsJobRequest(BaseModel):
     force: bool = False
     use_hunter: bool = True
@@ -62,7 +72,7 @@ class JobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    kind: str  # search | enrich | emails
+    kind: str  # search | enrich | emails | people
     query: str
     location: str
     source: str

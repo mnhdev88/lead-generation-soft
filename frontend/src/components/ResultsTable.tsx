@@ -206,6 +206,10 @@ export function ResultsTable({
   const bulkFindEmails = () =>
     run("bulk", async () => onJobCreated(await api.findEmails(selectedIds)), "Could not start the email check");
 
+  // Look up the owners in LinkedIn search results (and Apollo.io), then find their emails.
+  const bulkFindOwners = () =>
+    run("bulk", async () => onJobCreated(await api.findPeople(selectedIds)), "Could not start the owner lookup");
+
   const bulkSetStatus = (status: LeadStatus) =>
     run(
       "bulk",
@@ -401,6 +405,14 @@ export function ResultsTable({
             title="Find and verify the emails of these businesses and their people"
           >
             Find emails
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={busy !== null}
+            onClick={bulkFindOwners}
+            title="Look for the owners in web search results of LinkedIn profiles (and in Apollo.io if it is set up), then find their emails. Leads that already have a decision-maker are skipped."
+          >
+            Find owners
           </button>
           <button
             className="btn-secondary"

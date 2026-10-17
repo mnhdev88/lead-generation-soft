@@ -4,18 +4,28 @@
 // decision-makers with verified emails, website facts, and a notes/activity timeline.
 import { useEffect, useId, useRef, useState } from "react";
 import { AddToListButton } from "@/components/AddToListButton";
-import { EmailStatusBadge, IntentBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
+import {
+  EmailStatusBadge,
+  FindOnLinkedIn,
+  IntentBadge,
+  LeadStatusSelect,
+  Phone,
+  ScoreBadge,
+  SeniorityBadge,
+} from "@/components/ui";
 import {
   api,
   bandFor,
   HIRING_ROLE_LABEL,
   HOT_INTENT,
+  linkedinCompanySearchUrl,
   NO_SIZE_INFO_REASON,
   OFFER_LABEL,
   oldCrawlNote,
   OFFERS,
   PAIN_POINT_LABEL,
   salesFactRows,
+  savedLinkedinUrl,
   siteFactsUsable,
   SIZE_BAND_LABEL,
   SIZE_BANDS,
@@ -57,6 +67,13 @@ const EMAIL_SOURCE_LABEL: Record<string, string> = {
   website: "Found on the website",
   pattern: "Guessed from the company's email pattern",
   hunter: "Found by Hunter.io",
+  apollo: "Found by Apollo.io",
+};
+
+// Where a person came from, for the sources that need explaining.
+const CONTACT_SOURCE_LABEL: Record<string, string> = {
+  linkedin_search: "via LinkedIn search",
+  apollo: "via Apollo",
 };
 
 /** An email address with its verification badge. Invalid addresses are struck through. */
@@ -133,7 +150,7 @@ export function CompanyDrawer({
   const [loaded, setLoaded] = useState<Loaded>({ company: null, activities: [], error: null });
   const [reload, setReload] = useState(0); // bump to re-read the company and its timeline
   const [startedJobId, setStartedJobId] = useState<number | null>(null);
-  const [busy, setBusy] = useState<"people" | "verify" | "status" | "note" | null>(null);
+  const [busy, setBusy] = useState<"people" | "owner" | "verify" | "status" | "note" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [note, setNote] = useState("");
 
@@ -209,14 +226,16 @@ export function CompanyDrawer({
   );
   const startedJob = startedJobId !== null ? jobs.find((j) => j.id === startedJobId) : undefined;
 
-  async function startJob(kind: "people" | "verify") {
+  async function startJob(kind: "people" | "owner" | "verify") {
     setBusy(kind);
     setActionError(null);
     try {
       const job =
         kind === "people"
           ? await api.findDecisionMakers(companyId)
-          : await api.findEmails([companyId], { force: true }); // re-check even recently checked emails
+          : kind === "owner"
+            ? await api.findPeople([companyId]) // then finds their emails too
+            : await api.findEmails([companyId], { force: true }); // re-check even recently checked emails
       setStartedJobId(job.id);
       onJobCreated(job);
     } catch (err) {
@@ -325,6 +344,14 @@ export function CompanyDrawer({
               </button>
               <button
                 className="btn-secondary text-xs"
+                disabled={busy !== null || runningJob !== undefined}
+                onClick={() => startJob("owner")}
+                title="Look for the owner in web search results that point to LinkedIn profiles (and in Apollo.io if it is set up), then find their email. We never open LinkedIn pages ourselves."
+              >
+                {busy === "owner" ? "Starting…" : "Find owner (LinkedIn search / Apollo)"}
+              </button>
+              <button
+                className="btn-secondary text-xs"
                 disabled={!canVerify || busy !== null || runningJob !== undefined}
                 onClick={() => startJob("verify")}
                 title="Ask the mail servers whether these emails exist (no email is sent)"
@@ -373,7 +400,7 @@ export function CompanyDrawer({
               <IntentSection company={company} />
               <SizeSection company={company} />
               <EmailsSection company={company} />
-              <PeopleSection contacts={company.contacts} />
+              <PeopleSection contacts={company.contacts} companyName={company.name} />
               <GoogleProfileSection company={company} />
               <WebsiteSection company={company} />
               <ActivitySection
@@ -433,16 +460,42 @@ function CompanySubtitle({ company: c }: { company: Company }) {
             Google Maps ↗
           </a>
         )}
+        <CompanyLinkedinLink company={c} />
       </div>
     </div>
   );
 }
 
-/** Progress of a crawl / email check working on this company, or how the last one ended. */
+/** The company's saved LinkedIn page, or else a LinkedIn company search for its name. */
+function CompanyLinkedinLink({ company: c }: { company: Company }) {
+  const saved = savedLinkedinUrl(c.socials);
+  return (
+    <a
+      href={saved ?? linkedinCompanySearchUrl(c.name)}
+      target="_blank"
+      rel="noreferrer"
+      className="link"
+      title={
+        saved
+          ? "Open this business's LinkedIn page"
+          : "Search LinkedIn for this business (opens LinkedIn in a new tab; you may need to log in there)"
+      }
+    >
+      {saved ? "LinkedIn page ↗" : "Search LinkedIn ↗"}
+    </a>
+  );
+}
+
+/** Progress of a crawl / email check / owner lookup working on this company, or how the last one ended. */
 function JobProgress({ running, finished }: { running?: Job; finished?: Job }) {
   if (running) {
     const pct = running.total > 0 ? Math.round((running.processed / running.total) * 100) : 0;
-    const what = running.kind === "emails" ? "Finding and checking emails" : "Crawling the website";
+    const what =
+      running.kind === "emails"
+        ? "Finding and checking emails"
+        : running.kind === "people"
+          ? "Looking up owners"
+          : "Crawling the website";
     return (
       <div className="card space-y-2 border-[var(--accent)]" role="status" aria-live="polite">
         <div className="flex items-center justify-between gap-2 text-sm">
@@ -498,13 +551,14 @@ function EmailsSection({ company: c }: { company: Company }) {
   );
 }
 
-function PeopleSection({ contacts }: { contacts: Contact[] }) {
+function PeopleSection({ contacts, companyName }: { contacts: Contact[]; companyName: string }) {
   const team = sortTeam(contacts);
   return (
     <Section title="People" count={team.length}>
       {team.length === 0 ? (
         <p className="text-sm text-[var(--muted)]">
-          No people found yet. “Find decision-makers” looks for owners and managers on the website.
+          No people found yet. “Find decision-makers” looks for owners and managers on the website; “Find owner”
+          looks in LinkedIn search results (and Apollo.io if set up).
         </p>
       ) : (
         <ul className="space-y-2">
@@ -520,29 +574,40 @@ function PeopleSection({ contacts }: { contacts: Contact[] }) {
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                 <ContactEmail contact={p} showDetails />
                 {p.phone && <Phone phone={p.phone} type={p.phone_type} />}
-                {p.linkedin_url && (
+                {p.linkedin_url ? (
                   <a href={p.linkedin_url} target="_blank" rel="noreferrer" className="link">
                     LinkedIn ↗
                   </a>
+                ) : (
+                  p.full_name && <FindOnLinkedIn name={p.full_name} companyName={companyName} />
                 )}
               </div>
-              {(p.source || p.source_url) && (
-                <div className="mt-1 text-[11px] text-[var(--muted)]">
-                  Source:{" "}
-                  {p.source_url ? (
-                    <a href={p.source_url} target="_blank" rel="noreferrer" className="link break-all">
-                      {p.source ?? p.source_url}
-                    </a>
-                  ) : (
-                    p.source
-                  )}
-                </div>
-              )}
+              <ContactSourceLine contact={p} />
             </li>
           ))}
         </ul>
       )}
     </Section>
+  );
+}
+
+/** Where we found this person: "Found via LinkedIn search ↗", or "Source: website" for the others. */
+function ContactSourceLine({ contact: p }: { contact: Contact }) {
+  if (!p.source && !p.source_url) return null;
+  const known = p.source ? CONTACT_SOURCE_LABEL[p.source] : undefined;
+  const text = known ?? p.source ?? p.source_url;
+  return (
+    <div className="mt-1 text-[11px] text-[var(--muted)]">
+      {known ? "Found " : "Source: "}
+      {p.source_url ? (
+        <a href={p.source_url} target="_blank" rel="noreferrer" className="link break-all">
+          {text}
+          {known && " ↗"}
+        </a>
+      ) : (
+        text
+      )}
+    </div>
   );
 }
 
