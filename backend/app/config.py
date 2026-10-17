@@ -83,3 +83,17 @@ CRAWL_USER_AGENT = os.getenv(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/130.0 Safari/537.36 LeadGenSoft/0.1",
 )
+
+# --- Buying-intent signals ---
+# Ask Google Maps for up to 5 reviews and the photo count of each business (needed for the
+# review pain points and "possibly new business"). Google then bills the search as "Text Search
+# Enterprise + Atmosphere": $40 per 1,000 instead of $35, with the same 1,000 free a month, so
+# the monthly cap above (900) keeps it free. Set to 0 to search without them.
+GOOGLE_PLACES_REVIEWS = os.getenv("GOOGLE_PLACES_REVIEWS", "1") == "1"
+# Google PageSpeed Insights (free): mobile speed + SEO score of each website, checked a few at a
+# time while the app is idle. In practice it needs a free key: Google Cloud > APIs & Services >
+# enable "PageSpeed Insights API" > Credentials > Create API key (restrict it to that API), then
+# PAGESPEED_API_KEY=... in backend/.env. That gives about 25,000 tests a day at no cost.
+# Without a key Google usually refuses with "quota exceeded" and almost no sites get tested.
+PAGESPEED_ENABLED = os.getenv("PAGESPEED_ENABLED", "1") == "1"
+PAGESPEED_API_KEY = os.getenv("PAGESPEED_API_KEY", "").strip()

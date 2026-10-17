@@ -13,6 +13,7 @@ from .routers import auth, companies, emails, export, jobs, lists, people, usage
 from .worker import start_worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)  # its request lines can contain API keys
 
 
 @asynccontextmanager

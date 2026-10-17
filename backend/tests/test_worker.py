@@ -468,8 +468,10 @@ def test_backfill_slice_skips_ppp_when_everything_is_checked(db, monkeypatch):
     monkeypatch.setattr(worker, "size_saved_companies", lambda session, limit=None: calls.append("size") or 0)
     monkeypatch.setattr(worker.ppp, "available", lambda: True)
     monkeypatch.setattr(worker.ppp, "match_saved_companies", lambda *a, **k: calls.append("ppp") or (0, 0))
+    monkeypatch.setattr(worker.config, "PAGESPEED_ENABLED", False)  # no network in tests
+    monkeypatch.setattr(worker, "intent_saved_companies", lambda session, limit=None: calls.append("intent") or 0)
     assert worker._backfill_slice() is False  # nothing to do: the loop waits before trying again
-    assert calls == ["size"]
+    assert calls == ["size", "intent"]
 
 
 def test_backfill_slice_errors_are_logged_not_raised(db, monkeypatch):
@@ -479,6 +481,8 @@ def test_backfill_slice_errors_are_logged_not_raised(db, monkeypatch):
     monkeypatch.setattr(worker, "size_saved_companies", broken)
     monkeypatch.setattr(worker.ppp, "available", lambda: True)
     monkeypatch.setattr(worker.ppp, "match_saved_companies", broken)
+    monkeypatch.setattr(worker.config, "PAGESPEED_ENABLED", False)  # no network in tests
+    monkeypatch.setattr(worker, "intent_saved_companies", broken)
     db.add(company("Unchecked"))
     db.commit()
     assert worker._backfill_slice() is False

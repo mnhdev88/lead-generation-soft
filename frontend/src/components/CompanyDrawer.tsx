@@ -4,11 +4,19 @@
 // decision-makers with verified emails, website facts, and a notes/activity timeline.
 import { useEffect, useId, useRef, useState } from "react";
 import { AddToListButton } from "@/components/AddToListButton";
-import { EmailStatusBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
+import { EmailStatusBadge, IntentBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge } from "@/components/ui";
 import {
   api,
   bandFor,
+  HIRING_ROLE_LABEL,
+  HOT_INTENT,
   NO_SIZE_INFO_REASON,
+  OFFER_LABEL,
+  oldCrawlNote,
+  OFFERS,
+  PAIN_POINT_LABEL,
+  salesFactRows,
+  siteFactsUsable,
   SIZE_BAND_LABEL,
   SIZE_BANDS,
   type Activity,
@@ -17,8 +25,10 @@ import {
   type EmailStatus,
   type Job,
   type LeadStatus,
+  type ReviewPainPoint,
   type SizeConfidence,
   type WebsiteSignals,
+  websiteNotRead,
 } from "@/lib/api";
 
 // ----- small helpers shared with the results table ---------------------------------
@@ -360,9 +370,11 @@ export function CompanyDrawer({
                   </ul>
                 </Section>
               )}
+              <IntentSection company={company} />
               <SizeSection company={company} />
               <EmailsSection company={company} />
               <PeopleSection contacts={company.contacts} />
+              <GoogleProfileSection company={company} />
               <WebsiteSection company={company} />
               <ActivitySection
                 company={company}
@@ -534,6 +546,125 @@ function PeopleSection({ contacts }: { contacts: Contact[] }) {
   );
 }
 
+/** How likely the business is to buy each service now, with the reasons. */
+function IntentSection({ company: c }: { company: Company }) {
+  const intent = c.intent ?? {};
+  const offers = OFFERS.filter((o) => intent[o]);
+  // Scores worked out before the website was read leave out every website clue (booking,
+  // ads, schema…), so a low number here is not final yet.
+  const unread = websiteNotRead(c);
+  return (
+    <Section title="Sales opportunities">
+      {unread && offers.length > 0 && (
+        <p className="text-xs text-[var(--muted)]">
+          Website not read yet. These scores leave out website clues and may go up after a crawl.
+        </p>
+      )}
+      {offers.length === 0 ? (
+        <p className="text-sm text-[var(--muted)]">Not worked out yet. Crawling the website adds the most clues.</p>
+      ) : (
+        <ul className="space-y-3">
+          {offers.map((o) => {
+            const { score, reasons = [] } = intent[o]!;
+            const pct = Math.max(0, Math.min(100, score));
+            return (
+              <li key={o} className="space-y-1">
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="w-20 shrink-0 font-medium">{OFFER_LABEL[o]}</span>
+                  {/* The bar is decoration: the badge next to it says the number (and "Hot"). */}
+                  <div className="progress flex-1" aria-hidden>
+                    <div
+                      style={{ width: `${pct}%`, ...(score >= HOT_INTENT ? { background: "var(--success)" } : {}) }}
+                    />
+                  </div>
+                  <IntentBadge score={score} />
+                </div>
+                {reasons.length > 0 && (
+                  <ul className="space-y-0.5 pl-[5.75rem] text-xs text-[var(--muted)]">
+                    {reasons.map((r) => (
+                      <li key={r} className="flex gap-2">
+                        <span aria-hidden>•</span>
+                        {r}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+/** Facts from the Google Maps profile, its reviews, and Google's mobile speed test.
+ * The whole section is left out when we know none of them. */
+function GoogleProfileSection({ company: c }: { company: Company }) {
+  const r = c.review_signals ?? {};
+  const ps = c.pagespeed ?? {};
+  const speedOk = !ps.error;
+  const facts: [string, React.ReactNode][] = [];
+  if (c.google_photos_count !== null && c.google_photos_count !== undefined)
+    // Google sends at most 10 photos, so 10 means "10 or more".
+    facts.push(["Photos on Google", c.google_photos_count >= 10 ? "10 or more" : String(c.google_photos_count)]);
+  if (c.search_rank) facts.push(["Google search position", `#${c.search_rank} in our search results`]);
+  if (c.peer_reviews_median && c.reviews_count !== null)
+    facts.push([
+      "Reviews vs similar",
+      `${c.reviews_count.toLocaleString()} reviews (similar businesses nearby: about ${c.peer_reviews_median.toLocaleString()})`,
+    ]);
+  if (r.likely_new) facts.push(["Possibly new business", "Yes — few reviews, all from the last year"]);
+  if (r.low_rating_share)
+    facts.push(["Low ratings", `${Math.round(r.low_rating_share * 100)}% of the reviews we read are 3 stars or less`]);
+  if (speedOk && typeof ps.performance === "number")
+    facts.push(["Mobile speed", `${ps.performance}/100 (Google PageSpeed)`]);
+  if (speedOk && typeof ps.seo === "number") facts.push(["Google SEO check", `${ps.seo}/100`]);
+
+  const pains = (Object.entries(r.pain_points ?? {}) as [ReviewPainPoint, string[] | undefined][]).filter(
+    (entry): entry is [ReviewPainPoint, string[]] => Array.isArray(entry[1]) && entry[1].length > 0,
+  );
+  if (facts.length === 0 && pains.length === 0) return null;
+  return (
+    <Section title="Google profile">
+      <FactList facts={facts} />
+      {pains.map(([kind, quotes]) => (
+        <div key={kind} className="text-sm">
+          <p className="font-medium">Reviews mention: {PAIN_POINT_LABEL[kind] ?? kind.replaceAll("_", " ")}</p>
+          <ul className="mt-0.5 space-y-0.5 text-xs text-[var(--muted)]">
+            {quotes.map((q) => (
+              <li key={q}>
+                <q>{q}</q>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {speedOk && ps.checked_at && typeof ps.performance === "number" && (
+        <p className="text-[11px] text-[var(--muted)]">Speed checked {formatDate(ps.checked_at)}</p>
+      )}
+    </Section>
+  );
+}
+
+/** The website facts that show what the business has (booking, ads, chat…). The wording
+ * rules live in salesFactRows (lib/api.ts): "found" is a fact, "not found" is said carefully
+ * and only where it matters for this kind of business. */
+function salesFacts(c: Company, s: WebsiteSignals): [string, React.ReactNode][] {
+  const facts: [string, React.ReactNode][] = salesFactRows(s, c.business_kind);
+  if (s.hiring_roles && s.hiring_roles.length > 0) {
+    const titles = (s.hiring_titles ?? []).slice(0, 10);
+    facts.push([
+      "Hiring for",
+      <>
+        {s.hiring_roles.map((role) => HIRING_ROLE_LABEL[role] ?? role).join(", ")}
+        {titles.length > 0 && <span className="block text-xs text-[var(--muted)]">{titles.join(" · ")}</span>}
+      </>,
+    ]);
+  }
+  return facts;
+}
+
 /** Where the headcount came from, in words. `s` = the website facts (empty when not crawled). */
 function employeesSourceText(c: Company, s: WebsiteSignals) {
   if (c.employees_source === "website") {
@@ -693,6 +824,10 @@ function WebsiteSection({ company: c }: { company: Company }) {
     if (s.title) facts.push(["Page title", s.title]);
     if (s.description) facts.push(["Description", s.description]);
   }
+  // The same rule as the intent score (backend/app/intent.py): a website and a successful crawl.
+  // Facts are kept when a later re-crawl fails, so we then say they are from an older crawl.
+  const extra = siteFactsUsable(c) ? salesFacts(c, s) : [];
+  const oldNote = extra.length > 0 ? oldCrawlNote(c) : null;
 
   let crawlText = "Not crawled yet";
   if (c.enrich_status === "done") crawlText = `Crawled ${formatDate(c.enriched_at)}`;
@@ -705,6 +840,8 @@ function WebsiteSection({ company: c }: { company: Company }) {
         {crawlText}
       </p>
       <FactList facts={facts} />
+      {oldNote && <p className="text-xs text-[var(--muted)]">{oldNote}</p>}
+      <FactList facts={extra} />
       {socials.length > 0 && (
         <div className="flex flex-wrap gap-x-3 text-sm">
           {socials.map(([net, url]) => (

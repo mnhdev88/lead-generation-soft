@@ -97,7 +97,223 @@ export type WebsiteSignals = {
   locations_stated?: number | null; // "12 locations"
   has_careers?: boolean; // a careers / jobs / "we're hiring" page or section
   careers_url?: string | null;
+  // Buying-intent clues (backend/app/enrich/crawler.py). True only on clear evidence in the HTML.
+  has_analytics?: boolean; // Google Analytics / Tag Manager
+  // A Google Tag Manager container. It can load ad pixels and chat widgets after the page opens,
+  // which the crawler cannot see. Missing on older crawls (then we treat has_analytics as maybe-GTM).
+  has_tag_manager?: boolean;
+  has_search_console?: boolean; // google-site-verification meta tag
+  ad_pixels?: AdPixel[]; // ad tracking tags found
+  has_local_schema?: boolean; // LocalBusiness / Organization structured data
+  has_online_booking?: boolean;
+  booking_provider?: string | null; // "calendly", "zocdoc"… or "own form"
+  has_online_payment?: boolean;
+  has_shop?: boolean;
+  has_online_ordering?: boolean;
+  has_pdf_forms?: boolean; // paper forms to print (intake, registration…)
+  has_live_chat?: boolean;
+  has_viewport?: boolean | null; // mobile-friendly meta tag; null = could not tell
+  hiring_roles?: HiringRole[];
+  hiring_titles?: string[]; // raw job titles from the careers page (up to 10)
 };
+
+export type AdPixel = "google_ads" | "meta" | "tiktok" | "linkedin" | "bing";
+export const AD_PIXEL_LABEL: Record<AdPixel, string> = {
+  google_ads: "Google",
+  meta: "Facebook/Instagram",
+  tiktok: "TikTok",
+  linkedin: "LinkedIn",
+  bing: "Bing",
+};
+
+export type HiringRole =
+  | "front_desk"
+  | "scheduling"
+  | "data_entry"
+  | "customer_service"
+  | "office_admin"
+  | "marketing"
+  | "social_media"
+  | "web_it"
+  | "sales";
+export const HIRING_ROLE_LABEL: Record<HiringRole, string> = {
+  front_desk: "Front desk",
+  scheduling: "Scheduling",
+  data_entry: "Data entry",
+  customer_service: "Customer service",
+  office_admin: "Office admin",
+  marketing: "Marketing",
+  social_media: "Social media",
+  web_it: "Web / IT",
+  sales: "Sales",
+};
+
+// What the Google reviews say (backend/app/reviews.py). Empty {} = no reviews read yet.
+export type ReviewPainPoint = "booking" | "phone" | "website" | "communication" | "wait_time";
+export const PAIN_POINT_LABEL: Record<ReviewPainPoint, string> = {
+  booking: "hard to book",
+  phone: "phone not answered",
+  website: "website problems",
+  communication: "no follow-up",
+  wait_time: "long waits",
+};
+export type ReviewSignals = {
+  pain_points?: Partial<Record<ReviewPainPoint, string[]>>; // category -> short quotes from complaints
+  likely_new?: boolean; // few reviews, all less than a year old
+  newest_review?: string | null;
+  oldest_review?: string | null;
+  low_rating_share?: number | null; // 0..1, share of reviews rated 3 or lower
+};
+
+// Google PageSpeed (mobile) result (backend/app/pagespeed.py). Empty {} = not checked yet.
+export type PageSpeed = {
+  performance?: number; // 0-100
+  seo?: number; // 0-100
+  error?: string;
+  checked_at?: string;
+};
+
+// What a lead is likely to buy now (backend/app/intent.py).
+export const OFFERS = ["website", "seo", "software", "marketing"] as const;
+export type Offer = (typeof OFFERS)[number];
+export const OFFER_LABEL: Record<Offer, string> = {
+  website: "Website",
+  seo: "SEO",
+  software: "Software",
+  marketing: "Marketing",
+};
+// A score at or above this is a "hot" lead for that offer. Same as HOT_SCORE in backend/app/intent.py.
+export const HOT_INTENT = 60;
+export type IntentScore = { score: number; reasons: string[] };
+export type Intent = Partial<Record<Offer, IntentScore>>;
+
+// ----- what the website facts can and cannot tell us ---------------------------------
+// The crawler reads plain HTML from a few pages and runs no JavaScript. So "found" is a fact,
+// but "not found" only means we did not see it: a booking button or chat added by a script,
+// or a page we never reached, stays invisible. A wrong "has no booking" is worse than saying
+// nothing, so every "not found" below is worded carefully or left out.
+
+// Kinds of business from backend/app/intent.py business_kind().
+export type BusinessKind = "appointments" | "food" | "retail";
+
+type SiteCompany = { website: string | null; website_signals: WebsiteSignals | null | undefined };
+
+/** Website facts count only when the company has a website and a good crawl read it.
+ * The same rule as _site_signals() in backend/app/intent.py. */
+export function siteFactsUsable(c: SiteCompany): boolean {
+  return !!c.website && !!c.website_signals?.pages_crawled;
+}
+
+/** The company has a website, but no good crawl has read it yet. Its intent scores then
+ * leave out every website clue, so they may go up after a crawl. */
+export function websiteNotRead(c: SiteCompany): boolean {
+  return !!c.website && !c.website_signals?.pages_crawled;
+}
+
+/** A note when the website facts shown come from an older crawl, null when they are current. */
+export function oldCrawlNote(c: { enrich_status: EnrichStatus | null }): string | null {
+  if (c.enrich_status === "done") return null;
+  if (c.enrich_status === "failed") return "From an earlier successful crawl. The latest re-crawl failed.";
+  return "From an earlier crawl.";
+}
+
+/** Google Tag Manager may load ad pixels and chat we cannot see. Older crawls have no has_tag_manager
+ * flag: then any analytics tag might be Tag Manager, so we are careful. */
+export function mayUseTagManager(s: WebsiteSignals): boolean {
+  if (s.has_tag_manager !== undefined) return s.has_tag_manager === true;
+  return s.has_analytics === true;
+}
+
+/** "Not found on the 3 pages we read (it may be added by a script)" */
+export function notFoundText(pages: number | undefined): string {
+  const n = pages && pages > 0 ? pages : 1;
+  return `Not found on the ${n} page${n === 1 ? "" : "s"} we read (it may be added by a script)`;
+}
+
+/** Website facts that show what a business has (booking, ads, chat…), as label / text rows.
+ * Found = a plain fact. Not found = a careful "not found on the pages we read", and only where
+ * intent.py would care (booking for appointment businesses, ordering for food, …). Rows we
+ * cannot judge are left out. `s` must come from a good crawl (see siteFactsUsable). */
+export function salesFactRows(s: WebsiteSignals, kind?: BusinessKind | null): [string, string][] {
+  const pages = s.pages_crawled;
+  const notFound = notFoundText(pages);
+  const tagManager = mayUseTagManager(s);
+  const ads = s.ad_pixels;
+  const rows: [string, string | null][] = [
+    // The viewport tag is in the home page's own HTML, so "not found" there is close to sure.
+    [
+      "Mobile-friendly",
+      s.has_viewport === true ? "Yes" : s.has_viewport === false ? "Not found on the home page (no mobile viewport tag)" : null,
+    ],
+    [
+      "Online booking",
+      s.has_online_booking
+        ? `Yes${s.booking_provider ? ` (${s.booking_provider})` : ""}`
+        : s.has_online_booking === false && kind === "appointments"
+          ? notFound
+          : null,
+    ],
+    [
+      "Online ordering",
+      s.has_online_ordering ? "Yes" : s.has_online_ordering === false && kind === "food" ? notFound : null,
+    ],
+    ["Online shop", s.has_shop ? "Yes" : s.has_shop === false && kind === "retail" ? notFound : null],
+    ["Online payments", s.has_online_payment ? "Yes" : s.has_online_payment === false && kind ? notFound : null],
+    ["Paper forms", s.has_pdf_forms ? "Yes — PDF forms to print and fill in" : null],
+    // Chat widgets are often loaded by Tag Manager: on those sites we cannot tell, so say nothing.
+    ["Live chat", s.has_live_chat ? "Yes" : s.has_live_chat === false && !tagManager ? notFound : null],
+    [
+      "Advertising",
+      !ads
+        ? null
+        : ads.length > 0
+          ? `Runs ${ads.map((p) => AD_PIXEL_LABEL[p] ?? p).join("/")} ads`
+          : tagManager
+            ? null // ad pixels are usually inside the Tag Manager container
+            : "None seen in the page code",
+    ],
+    [
+      "Visitor tracking",
+      s.has_analytics
+        ? s.has_tag_manager === false
+          ? "Yes — Google Analytics"
+          : "Yes — Google Analytics / Tag Manager"
+        : s.has_analytics === false
+          ? "None seen in the page code"
+          : null,
+    ],
+    ["Google Search Console", s.has_search_console ? "Set up" : null],
+    [
+      "Business info for Google",
+      s.has_local_schema
+        ? "Yes (schema markup)"
+        : s.has_local_schema === false
+          ? "Not seen in the page code (it may be added by a script)"
+          : null,
+    ],
+  ];
+  return rows.filter((row): row is [string, string] => row[1] !== null);
+}
+
+/** What a screen reader says for an intent badge, e.g.
+ * "Website intent 72 out of 100, hot lead. No SSL +15. Slow on mobile +15". */
+export function intentBadgeSpeech({
+  score,
+  label,
+  reasons,
+  unchecked,
+}: {
+  score: number;
+  label?: string | null;
+  reasons?: string[];
+  unchecked?: boolean;
+}): string {
+  const hot = score >= HOT_INTENT;
+  let text = `${label ? `${label} intent` : "Intent"} ${score} out of 100${hot ? ", hot lead" : ""}`;
+  if (unchecked) text += ". Website not read yet, the score may go up after a crawl";
+  if (reasons && reasons.length > 0) text += `. ${reasons.join(". ")}`;
+  return text;
+}
 
 export type EnrichStatus = "done" | "failed" | "no_website";
 
@@ -185,6 +401,19 @@ export type Company = {
   founded_year: number | null;
   locations_count: number | null;
   ppp: PppMatch;
+  // Buying intent per offer, and the offer they most likely need.
+  intent: Intent; // {} = not worked out yet
+  intent_best: Offer | null;
+  intent_best_score: number | null;
+  // Google profile facts.
+  google_photos_count: number | null; // Google returns at most 10
+  review_signals: ReviewSignals;
+  search_rank: number | null; // best position in a Google search (1 = top)
+  peer_reviews_median: number | null; // typical review count of similar businesses in the same search
+  pagespeed: PageSpeed;
+  // The kind of business intent.py scores booking / ordering / shop / payment for
+  // (business_kind() there). Missing or null = unknown: then we never say one is "not found".
+  business_kind?: BusinessKind | null;
   list_ids: number[];
   source: string;
   contacts: Contact[]; // decision-makers / most senior first
@@ -280,7 +509,9 @@ export type CompanyFilters = {
   lead_status?: LeadStatus;
   min_score?: number;
   size_band?: SizeBand | "unknown"; // "unknown" = size not worked out
-  sort?: "name" | "score" | "rating" | "employees"; // default "name"; the others sort high to low
+  looking_for?: Offer | "any"; // the offer min_intent and sort "intent" use ("any" = best offer)
+  min_intent?: number;
+  sort?: "name" | "score" | "rating" | "employees" | "intent"; // default "name"; the others sort high to low
 };
 
 export type PeopleFilters = {

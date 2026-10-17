@@ -108,6 +108,27 @@ class Company(Base):
     # "name": "SMILE DENTAL PLLC", "match": "name + zip", ...}; {} = checked, none found
     ppp: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     ppp_checked_at: Mapped[datetime | None]
+    # Google Maps profile (app/sources/google_places.py) and what its reviews say (app/reviews.py)
+    google_photos_count: Mapped[int | None] = mapped_column(Integer)  # Google returns at most 10
+    # up to 5 reviews: [{"rating": 2, "text": "...", "publish_time": "2026-01-05T...", "relative": "a month ago"}]
+    google_reviews: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    # e.g. {"pain_points": {"booking": ["...hard to book..."]}, "likely_new": false, "newest_review": "..."}
+    review_signals: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    search_rank: Mapped[int | None] = mapped_column(Integer)  # best position in a Google Maps search (1 = top)
+    peer_reviews_median: Mapped[int | None] = mapped_column(Integer)  # typical review count of the same search
+    # Google PageSpeed (app/pagespeed.py), mobile: {"performance": 38, "seo": 82, "checked_at": "..."}
+    pagespeed: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    pagespeed_checked_at: Mapped[datetime | None]
+    # Buying intent per service we sell (app/intent.py):
+    # {"website": {"score": 65, "reasons": ["No SSL +15", ...]}, "seo": {...}, "software": {...}, "marketing": {...}}
+    intent: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    intent_best: Mapped[str | None] = mapped_column(String(20))  # the service with the highest score
+    intent_best_score: Mapped[int | None] = mapped_column(Integer, index=True)
+    # The same scores as plain columns, so the list can be filtered and sorted by them.
+    intent_website: Mapped[int | None] = mapped_column(Integer, index=True)
+    intent_seo: Mapped[int | None] = mapped_column(Integer, index=True)
+    intent_software: Mapped[int | None] = mapped_column(Integer, index=True)
+    intent_marketing: Mapped[int | None] = mapped_column(Integer, index=True)
     source: Mapped[str] = mapped_column(String(50))
     source_ref: Mapped[str] = mapped_column(String(200))
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -115,6 +136,13 @@ class Company(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company", cascade="all, delete-orphan")
+
+    @property
+    def business_kind(self) -> str | None:
+        """'appointments' | 'food' | 'retail' | None, as used by the intent scores (app/intent.py)."""
+        from .intent import business_kind  # here, not at the top: intent.py imports this module
+
+        return business_kind(self)
     activities: Mapped[list["Activity"]] = relationship(back_populates="company", cascade="all, delete-orphan")
 
 

@@ -26,6 +26,11 @@ class CompanyResult:
     google_maps_url: str | None = None
     business_status: str | None = None
     socials: dict = field(default_factory=dict)
+    # Google Maps profile only: how many photos (Google returns at most 10) and up to 5 reviews,
+    # each {"rating": int|None, "text": str (<= 1000 chars), "publish_time": ISO str|None, "relative": str|None}
+    photos_count: int | None = None
+    rank: int | None = None  # Google only: position in its own results for the query (1 = first)
+    reviews: list = field(default_factory=list)
     raw: dict = field(default_factory=dict)
 
 

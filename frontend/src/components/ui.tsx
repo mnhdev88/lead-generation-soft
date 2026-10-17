@@ -3,14 +3,18 @@
 // Small building blocks shared by every page (companies table, people, lists).
 import {
   bandFor,
+  HOT_INTENT,
+  intentBadgeSpeech,
   LEAD_STATUS_LABEL,
   LEAD_STATUSES,
   NO_SIZE_INFO_REASON,
+  OFFER_LABEL,
   SENIORITY_LABEL,
   SIZE_BAND_LABEL,
   type EmailStatus,
   type EmployeesSource,
   type LeadStatus,
+  type Offer,
   type PhoneType,
   type Seniority,
   type SizeBand,
@@ -89,17 +93,56 @@ export function SeniorityBadge({ seniority }: { seniority: Seniority | null | un
   return <span className={`badge ${SENIORITY_CLS[seniority] ?? "badge-muted"}`}>{SENIORITY_LABEL[seniority] ?? seniority}</span>;
 }
 
-/** Lead score 0-100 as a coloured pill; hover shows why. */
+/** Lead score 0-100 as a coloured pill; hover shows why. Screen readers hear the score and the
+ * reasons from hidden text (most of them ignore an aria-label on a plain <span>). */
 export function ScoreBadge({ score, reasons }: { score: number | null | undefined; reasons?: string[] }) {
   if (score === null || score === undefined) return <span className="text-xs text-[var(--muted)]">—</span>;
   const cls = score >= 70 ? "badge-success" : score >= 40 ? "badge-warn" : "badge-muted";
+  const hasReasons = !!reasons && reasons.length > 0;
   return (
-    <span
-      className={`badge ${cls} tabular-nums`}
-      title={reasons && reasons.length ? reasons.join("\n") : undefined}
-      aria-label={`Lead score ${score} out of 100`}
-    >
-      {score}
+    <span className={`badge ${cls} tabular-nums`} title={hasReasons ? reasons.join("\n") : undefined}>
+      <span aria-hidden>{score}</span>
+      <span className="sr-only">
+        Lead score {score} out of 100{hasReasons ? `. ${reasons.join(". ")}` : ""}
+      </span>
+    </span>
+  );
+}
+
+// Added to the tooltip of a lead whose website was not read yet.
+const UNCHECKED_HINT = "Website not read yet: the score leaves out website clues and may go up after a crawl.";
+
+/** Buying intent 0-100 for one offer, e.g. "Hot · Website 72". `offer` adds the offer's name
+ * (used when the table shows each lead's best offer). `unchecked` = the website was not read
+ * yet, shown as a "?" after the score. Hover shows why; screen readers hear the same from
+ * hidden text, and touch users see the reasons when they open the business. */
+export function IntentBadge({
+  score,
+  offer,
+  reasons,
+  unchecked = false,
+}: {
+  score: number | null | undefined;
+  offer?: Offer | null;
+  reasons?: string[];
+  unchecked?: boolean;
+}) {
+  if (score === null || score === undefined) return <span className="text-xs text-[var(--muted)]">—</span>;
+  const hot = score >= HOT_INTENT;
+  const cls = hot ? "badge-success" : score >= HOT_INTENT / 2 ? "badge-warn" : "badge-muted";
+  const label = offer ? OFFER_LABEL[offer] ?? offer : null;
+  const tip = [...(reasons ?? []), ...(unchecked ? [UNCHECKED_HINT] : [])];
+  return (
+    <span className={`badge ${cls} gap-1 tabular-nums`} title={tip.length ? tip.join("\n") : undefined}>
+      {/* What you see. "Hot" in words: colour alone is not enough for colour-blind users. */}
+      <span aria-hidden className="contents">
+        {hot && <span className="font-semibold">Hot ·</span>}
+        {label && <span>{label}</span>}
+        {score}
+        {unchecked && <span className="opacity-70">?</span>}
+      </span>
+      {/* What a screen reader says: the score in words plus the reasons. */}
+      <span className="sr-only">{intentBadgeSpeech({ score, label, reasons, unchecked })}</span>
     </span>
   );
 }

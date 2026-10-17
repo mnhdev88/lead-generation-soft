@@ -676,3 +676,51 @@ def test_make_client_refuses_private_addresses_without_connecting():
 def test_site_local_ipv6_is_refused():
     assert crawler._is_public_ip("fec0::1") is False
     assert crawler.is_public_ip("8.8.8.8") is True
+
+
+# ---------------------------------------------------------------------------
+# A site listed as http:// that also works on https:// is not "No SSL"
+# ---------------------------------------------------------------------------
+
+def test_http_address_with_working_https_is_not_called_no_ssl():
+    requested: list[str] = []
+    page = "<html><body>Email: info@acmeplumbing.com</body></html>"
+    transport = make_site({"http://www.acmeplumbing.com/": page, "https://www.acmeplumbing.com/": page},
+                          requested)
+    data = crawl(transport, "http://www.acmeplumbing.com/")
+    assert data.ok and data.final_url == "http://www.acmeplumbing.com/"
+    assert data.signals["https"] is True
+    assert requested.count("https://www.acmeplumbing.com/") == 1  # one quick check, nothing more
+
+
+def test_http_address_with_broken_https_is_no_ssl():
+    transport = make_site({
+        "http://oldsite.pk/": "<html><body>Email: owner@oldsite.pk</body></html>",
+        "https://oldsite.pk/": httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+    })
+    data = crawl(transport, "http://oldsite.pk/")
+    assert data.ok and data.signals["https"] is False
+
+
+def test_https_that_sends_visitors_back_to_http_is_no_ssl():
+    transport = make_site({
+        "http://oldsite.pk/": "<html><body>Email: owner@oldsite.pk</body></html>",
+        "https://oldsite.pk/": httpx.Response(301, headers={"location": "http://oldsite.pk/"}),
+    })
+    assert crawl(transport, "http://oldsite.pk/").signals["https"] is False
+
+
+def test_https_check_that_times_out_is_unknown(monkeypatch):
+    monkeypatch.setattr(crawler, "HTTPS_CHECK_TIME", 0.3)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.scheme == "https":
+            await asyncio.sleep(5)
+        if request.url.path == "/":
+            return html_response("<p>owner@slowssl.com</p>")
+        return httpx.Response(404)
+
+    started = time.perf_counter()
+    data = crawl(httpx.MockTransport(handler), "http://slowssl.com/")
+    assert data.ok and data.signals["https"] is None
+    assert time.perf_counter() - started < 3

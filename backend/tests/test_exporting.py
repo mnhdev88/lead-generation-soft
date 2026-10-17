@@ -30,7 +30,9 @@ def test_company_table_keeps_old_csv_columns_first():
                                   "decision_maker", "decision_maker_title", "decision_maker_email",
                                   "phone_type",
                                   "size_band", "employees", "employees_source", "founded_year", "locations",
-                                  "hiring", "ppp_jobs", "ppp_loan_date"]
+                                  "hiring", "ppp_jobs", "ppp_loan_date",
+                                  "intent_best", "intent_website", "intent_seo", "intent_software",
+                                  "intent_marketing", "intent_reasons"]
 
 
 def test_company_row_values():
@@ -144,3 +146,18 @@ def test_hiring_column_survives_a_failed_recrawl():
     headers, rows = exporting.company_table([kept, never])
     assert [row_dict(headers, r)["hiring"] for r in rows] == ["yes", ""]
     assert row_dict(headers, rows[0])["https"] == ""  # SSL etc. still need the latest crawl to be good
+
+
+def test_intent_columns_at_the_end():
+    c = make_company(intent_best="website", intent_website=45, intent_seo=10, intent_software=0,
+                     intent_marketing=5, intent={"website": {"score": 45, "reasons": ["No SSL (http only) +15",
+                                                                                      "No website +30"]}})
+    headers, rows = exporting.company_table([c])
+    row = row_dict(headers, rows[0])
+    assert headers[-6:] == ["intent_best", "intent_website", "intent_seo", "intent_software",
+                            "intent_marketing", "intent_reasons"]
+    assert (row["intent_best"], row["intent_website"], row["intent_seo"]) == ("website", 45, 10)
+    assert row["intent_reasons"] == "No SSL (http only) +15; No website +30"
+    # Not scored yet / all zero: empty reasons
+    row = row_dict(headers, exporting.company_table([make_company()])[1][0])
+    assert row["intent_best"] is None and row["intent_reasons"] == ""

@@ -644,7 +644,8 @@ def test_crawl_collects_size_signals(monkeypatch):
     assert s["employees_stated"] == 6 and s["employees_from"] == "text"
     assert s["locations_stated"] == 7  # the locations page was crawled
     assert s["has_careers"] is True and s["careers_url"] == "https://acme.com/careers"
-    assert "https://acme.com/careers" not in requested  # careers pages are not crawled
+    # The careers page is fetched once, last (for job titles), not as a contact page.
+    assert requested[-1] == "https://acme.com/careers" and requested.count("https://acme.com/careers") == 1
 
 
 def test_hostile_text_is_fast():

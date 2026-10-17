@@ -7,10 +7,10 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { BulkBar, Feedback, Pager, SelectAllBox } from "@/components/lists/parts";
 import { useAction, useRows } from "@/components/lists/useRows";
 import { companyHref, Missing } from "@/components/people/cells";
-import { LeadStatusSelect, ScoreBadge, SizeBadge } from "@/components/ui";
-import { api, LEAD_STATUS_LABEL, type Company, type CompanyFilters, type LeadStatus } from "@/lib/api";
+import { IntentBadge, LeadStatusSelect, ScoreBadge, SizeBadge } from "@/components/ui";
+import { api, LEAD_STATUS_LABEL, websiteNotRead, type Company, type CompanyFilters, type LeadStatus } from "@/lib/api";
 
-type SortBy = "name" | "score";
+type SortBy = "name" | "score" | "intent";
 
 // Module-level so useRows sees the same function every render.
 const fetchCompanies = (key: string, limit: number, offset: number) =>
@@ -60,6 +60,7 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
           <select className="input w-auto py-1" value={sort} onChange={(e) => setSort(e.target.value as SortBy)}>
             <option value="name">Name</option>
             <option value="score">Score (high first)</option>
+            <option value="intent">Intent (high first)</option>
           </select>
         </label>
         <ExportMenu kind="companies" filters={filters} />
@@ -81,7 +82,7 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
       )}
 
       <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1040px] text-sm">
+        <table className="w-full min-w-[1140px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">
@@ -98,6 +99,7 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
               <th className="px-3 py-2">Email</th>
               <th className="px-3 py-2">Website</th>
               <th className="px-3 py-2">Score</th>
+              <th className="px-3 py-2">Intent</th>
               <th className="px-3 py-2">Size</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2">
@@ -155,6 +157,22 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
                     <ScoreBadge score={c.score} reasons={c.score_reasons} />
                   </td>
                   <td className="px-3 py-2">
+                    {/* The offer this business most likely needs now, e.g. "Hot · Website 72". */}
+                    {/* "?" after the score = the website was not read yet (the score may go up). */}
+                    {c.intent_best ? (
+                      <IntentBadge
+                        score={c.intent_best_score}
+                        offer={c.intent_best}
+                        reasons={c.intent?.[c.intent_best]?.reasons}
+                        unchecked={websiteNotRead(c)}
+                      />
+                    ) : websiteNotRead(c) && c.intent_best_score === 0 ? (
+                      <IntentBadge score={0} unchecked />
+                    ) : (
+                      <Missing />
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
                     <SizeBadge
                       band={c.size_band}
                       employees={c.employees}
@@ -186,7 +204,7 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
             })}
             {rows.data.items.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-10 text-center text-[var(--muted)]">
+                <td colSpan={10} className="px-3 py-10 text-center text-[var(--muted)]">
                   {!rows.loaded ? (
                     "Loading…"
                   ) : (

@@ -91,7 +91,7 @@ def export_to_sheets(body: SheetsExportRequest, session: Session = Depends(get_s
             stmt = call_filters(companies_router.filters, body.filters)
             items = session.scalars(
                 stmt.options(selectinload(Company.contacts))
-                .order_by(*companies_router.company_order(body.filters.get("sort")))
+                .order_by(*companies_router.company_order(body.filters.get("sort"), body.filters.get("looking_for")))
             )
             headers, rows = exporting.company_table(items)
         else:

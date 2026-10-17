@@ -171,6 +171,17 @@ class CompanyOut(BaseModel):
     founded_year: int | None = None
     locations_count: int | None = None
     ppp: dict = {}  # matching US PPP loan (app/ppp.py), {} = none found / not checked
+    # Buying intent per service (app/intent.py): {"website": {"score": 65, "reasons": [...]}, ...}
+    intent: dict = {}
+    intent_best: str | None = None  # website | seo | software | marketing, None = all 0
+    intent_best_score: int | None = None
+    business_kind: str | None = None  # appointments | food | retail | None (app/intent.py)
+    # Google Maps profile facts and what the reviews say (app/reviews.py)
+    google_photos_count: int | None = None
+    review_signals: dict = {}
+    search_rank: int | None = None  # best position in a Google Maps search (1 = top)
+    peer_reviews_median: int | None = None  # typical review count of the same search
+    pagespeed: dict = {}  # mobile PageSpeed (app/pagespeed.py), {} = not checked
     list_ids: list[int] = []  # lists this company is in (filled by the router)
     source: str
     contacts: list[ContactOut] = []  # sorted: decision-makers / most senior first
@@ -181,7 +192,8 @@ class CompanyOut(BaseModel):
     def _none_to_list(cls, v):
         return v or []
 
-    @field_validator("socials", "website_signals", "email_statuses", "ppp", mode="before")
+    @field_validator("socials", "website_signals", "email_statuses", "ppp", "intent", "review_signals",
+                     "pagespeed", mode="before")
     @classmethod
     def _none_to_dict(cls, v):
         return v or {}

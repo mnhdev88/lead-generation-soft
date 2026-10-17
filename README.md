@@ -44,6 +44,8 @@ backend/                   Python + FastAPI
   app/dedupe.py            Merges the same business found twice (OSM + Google, or twice in OSM)
   app/sizing.py            Company size estimate (Solo/Small/Medium/Large) and its reasons
   app/ppp.py               US PPP loan data: download, import, match (headcount reported 2020-21)
+  app/intent.py            Buying intent per service (Website / SEO / Software / Marketing)
+  app/reviews.py           Complaints in Google reviews;  app/pagespeed.py: Google PageSpeed checks
   app/exporting.py         CSV / Excel files;  app/sheets.py: Google Sheets export
   app/routers/             API endpoints
   data/leads.db            SQLite database (created automatically)
@@ -288,3 +290,27 @@ website size facts on their next crawl (done automatically).
 It streams the files straight into the database (no 5 GB of CSV files on disk) and can be run
 again to resume. `python -m app.ppp stats` shows what is there. While the app runs, it then looks
 up your US leads a few hundred at a time when it isn't busy.
+
+## Buying intent ("Looking for")
+
+Every business gets an **intent score (0-100) per service you sell**: Website, SEO, Software and
+Marketing, with the reasons shown (like the lead score). 60+ is marked **Hot**. In the Leads table,
+pick what you are selling in **Looking for**, tick **Hot only**, or sort by **Intent**.
+
+The scores come from:
+
+- the website crawl: SSL, outdated or DIY site, mobile-friendly, page title/description, Google
+  business info (schema), Google Analytics, ad pixels (Google/Facebook/TikTok...), online
+  booking / ordering / shop / payment, live chat, PDF forms, job titles on the careers page,
+- Google Maps: review count and rating, photos, position in the search, up to 5 reviews
+  (complaints like "hard to book" or "nobody answers the phone"), "possibly a new business",
+- Google PageSpeed: mobile speed and SEO score (one website at a time while the app is idle),
+- company size (bigger businesses need more software).
+
+Precision first: something only counts as "missing" when the crawler could really see it. Sites
+that load widgets with JavaScript or Google Tag Manager show "can't tell" instead. Leads crawled
+before this feature get the new website facts when they are crawled again.
+
+Settings in `backend/.env` (see `.env.example`): `GOOGLE_PLACES_REVIEWS=1` (reviews + photos;
+Google bills $40 instead of $35 per 1,000 searches, the first 1,000 a month are free either way)
+and `PAGESPEED_API_KEY=` (free key, 25,000 tests a day; without one Google mostly refuses).

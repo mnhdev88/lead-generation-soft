@@ -5,6 +5,10 @@ Docs: https://developers.google.com/maps/documentation/places/web-service/text-s
 How it works:
 - One search ("dentist in Karachi") returns at most 60 places, 20 per page.
   Each page is one paid request, counted with usage.consume() before it is sent.
+- With GOOGLE_PLACES_REVIEWS on (default) we also ask for the photos and up to 5 reviews of
+  each place: how many photos (Google lists at most 10) and what customers complain about
+  (app/reviews.py) help tell who needs our services. Google bills this at a higher price
+  tier; set GOOGLE_PLACES_REVIEWS=0 in backend/.env to switch it off.
 - To get more than 60 ("deep search"), we look up the city's map rectangle, cut it
   into a grid of smaller tiles and search each tile separately, skipping duplicates.
 """
@@ -38,6 +42,9 @@ FIELD_MASK = ",".join([
     "places.regularOpeningHours.weekdayDescriptions",
     "nextPageToken",
 ])
+# Extra fields when config.GOOGLE_PLACES_REVIEWS is on (see field_mask()).
+REVIEW_FIELDS = ["places.reviews", "places.photos"]
+REVIEW_TEXT_MAX = 1000  # characters kept per review
 
 PAGE_SIZE = 20  # Google's maximum per page
 RESULTS_PER_QUERY = 60  # Google stops after 3 pages
@@ -117,11 +124,14 @@ class GooglePlacesSource(Source):
         if rect:
             body["locationRestriction"] = {"rectangle": rect}
 
+        position = 0  # Google's own order in this query, 1 = shown first (CompanyResult.rank)
         while len(found) < limit:
             data = self._post(client, body)
             for place in data.get("places", []):
+                position += 1
                 result = _to_company(place)
                 if result and result.source_ref not in found and len(found) < limit:
+                    result.rank = position
                     found[result.source_ref] = result
             token = data.get("nextPageToken")
             if not token:
@@ -134,7 +144,7 @@ class GooglePlacesSource(Source):
         usage.consume(USAGE_PROVIDER)  # raises UsageLimitError when the cap is reached
         headers = {
             "X-Goog-Api-Key": config.GOOGLE_PLACES_API_KEY,
-            "X-Goog-FieldMask": FIELD_MASK,
+            "X-Goog-FieldMask": field_mask(),
             "Content-Type": "application/json",
         }
         try:
@@ -152,6 +162,13 @@ class GooglePlacesSource(Source):
 
 
 # ----- helpers ---------------------------------------------------------------
+
+def field_mask() -> str:
+    """The fields we ask Google for. Reads config at call time (tests switch reviews on/off)."""
+    if config.GOOGLE_PLACES_REVIEWS:
+        return FIELD_MASK + "," + ",".join(REVIEW_FIELDS)
+    return FIELD_MASK
+
 
 def _make_tiles(box: tuple[float, float, float, float], limit: int) -> list[dict]:
     """Cut the (south, north, west, east) box into an n x n grid of Google rectangles.
@@ -180,6 +197,34 @@ def _address_part(place: dict, *types: str) -> str | None:
     return None
 
 
+def _reviews(place: dict) -> list[dict]:
+    """Google's reviews in our small format. Odd or empty entries are skipped."""
+    out = []
+    for rev in place.get("reviews") or []:
+        if not isinstance(rev, dict):
+            continue
+        # "text" is in the requested language (English by default), "originalText" as written.
+        text = ""
+        for key in ("text", "originalText"):
+            part = rev.get(key)
+            if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip():
+                text = part["text"].strip()
+                break
+        rating = rev.get("rating")
+        rating = int(rating) if isinstance(rating, (int, float)) and not isinstance(rating, bool) else None
+        if not text and rating is None:
+            continue
+        publish = rev.get("publishTime")
+        relative = rev.get("relativePublishTimeDescription")
+        out.append({
+            "rating": rating,
+            "text": text[:REVIEW_TEXT_MAX],
+            "publish_time": publish if isinstance(publish, str) and publish else None,
+            "relative": relative if isinstance(relative, str) and relative else None,
+        })
+    return out
+
+
 def _to_company(place: dict) -> CompanyResult | None:
     """Convert one Google place into our CompanyResult (None = skip it)."""
     if place.get("businessStatus") == "CLOSED_PERMANENTLY":
@@ -194,6 +239,13 @@ def _to_company(place: dict) -> CompanyResult | None:
 
     hours = (place.get("regularOpeningHours") or {}).get("weekdayDescriptions") or []
     location = place.get("location") or {}
+
+    # Photos and reviews only when we asked for them; a place without photos has no "photos" key.
+    photos_count, reviews = None, []
+    if config.GOOGLE_PLACES_REVIEWS:
+        photos = place.get("photos")
+        photos_count = len(photos) if isinstance(photos, list) else 0
+        reviews = _reviews(place)
 
     return CompanyResult(
         name=name,
@@ -211,7 +263,10 @@ def _to_company(place: dict) -> CompanyResult | None:
         opening_hours=("; ".join(hours)[:300] or None),
         google_maps_url=place.get("googleMapsUri"),
         business_status=place.get("businessStatus"),
-        raw=place,
+        photos_count=photos_count,
+        reviews=reviews,
+        # Reviews and photos are kept (shortened) above, not a second time in the raw data.
+        raw={k: v for k, v in place.items() if k not in ("reviews", "photos")},
     )
 
 

@@ -222,6 +222,38 @@ def _merge_contacts(session: Session, keep: Company, drop: Company) -> int:
     return moved
 
 
+def _merge_google_profile(keep: Company, winner: Company, loser: Company) -> None:
+    """Google's photo count, reviews (and what they say), search position and the typical
+    review count of the search: the copy that has them, the better source's first. (OSM
+    first, then Google: the Google copy is the one deleted, so its facts must move.)
+    Lists and dicts are copied into new ones, so SQLAlchemy saves the JSON columns."""
+    photos = next((c.google_photos_count for c in (winner, loser) if c.google_photos_count is not None), None)
+    keep.google_photos_count = photos
+    with_reviews = next((c for c in (winner, loser) if c.google_reviews), None)
+    if with_reviews is not None:
+        keep.google_reviews = list(with_reviews.google_reviews)
+        keep.review_signals = dict(with_reviews.review_signals or {})
+    else:
+        keep.google_reviews = list(winner.google_reviews or loser.google_reviews or [])
+        keep.review_signals = dict(winner.review_signals or loser.review_signals or {})
+    ranks = [c.search_rank for c in (winner, loser) if c.search_rank is not None]
+    keep.search_rank = min(ranks) if ranks else None
+    peers = winner.peer_reviews_median if winner.peer_reviews_median is not None else loser.peer_reviews_median
+    keep.peer_reviews_median = peers
+
+
+def _merge_pagespeed(keep: Company, drop: Company, old_website: str | None) -> None:
+    """A PageSpeed result belongs to one website. Keep's own result stays while its website
+    did not change; else drop's result when it tested the website keep has now; else none
+    (the idle back-fill tests the new website)."""
+    if keep.website == old_website and keep.pagespeed:
+        return
+    if drop.pagespeed and drop.website == keep.website:
+        keep.pagespeed, keep.pagespeed_checked_at = dict(drop.pagespeed), drop.pagespeed_checked_at
+    elif keep.website != old_website:
+        keep.pagespeed, keep.pagespeed_checked_at = {}, None
+
+
 def merge_companies(session: Session, keep: Company, drop: Company, reason: str = "duplicate") -> Company:
     """Merge `drop` into `keep` and delete `drop`. Returns keep (the caller commits)."""
     session.flush()
@@ -234,8 +266,11 @@ def merge_companies(session: Session, keep: Company, drop: Company, reason: str 
     if winner is drop:
         keep.raw = drop.raw
     # Website: the company's own domain beats a Facebook page.
+    old_website = keep.website
     sites = sorted((winner, loser), key=lambda c: (not c.website, not own_domain(c.domain)))
     keep.website, keep.domain = sites[0].website, sites[0].domain
+    _merge_pagespeed(keep, drop, old_website)
+    _merge_google_profile(keep, winner, loser)
     # Phone: a usable one, the better source's first.
     phones = sorted((winner, loser), key=lambda c: not is_usable(c.phone, c.phone_type))
     keep.phone = phones[0].phone

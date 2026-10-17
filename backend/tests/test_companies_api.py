@@ -191,3 +191,26 @@ def test_find_emails_for_selected_companies(client, sample):
 
     assert client.post("/api/companies/find-emails", json={"company_ids": [9999]}).status_code == 400
     assert client.post("/api/companies/find-emails", json={"company_ids": []}).status_code == 422
+
+
+def test_score_filters_must_be_0_to_100(client, db, sample):
+    """A huge min_intent / min_score used to crash the database query (a 500 error)."""
+    from app.routers.companies import filters
+
+    huge = 10**23
+    for name in ("min_intent", "min_score"):
+        assert client.get(f"/api/companies?{name}={huge}").status_code == 422
+        assert client.get(f"/api/companies/export.csv?{name}={huge}").status_code == 422
+        assert client.get(f"/api/companies?{name}=101").status_code == 422
+        assert client.get(f"/api/companies?{name}=-1").status_code == 422
+    assert client.get("/api/companies?min_intent=60").status_code == 200
+    # The Google Sheets export calls filters() as a plain function: checked there too.
+    for bad in (huge, "abc", 101, -1, True):
+        with pytest.raises(ValueError):
+            filters(min_intent=bad)
+        with pytest.raises(ValueError):
+            filters(min_score=bad)
+    filters(min_intent=0, min_score=100)  # fine
+    resp = client.post("/api/export/sheets", json={"kind": "companies", "filters": {"min_intent": huge},
+                                                   "spreadsheet": "1" * 30})
+    assert resp.status_code == 400 and "min_intent" in resp.text

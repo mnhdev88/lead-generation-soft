@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from .intent import apply_intent
 from .models import Company, Contact
 from .people import classify
 from .phones import is_usable
@@ -178,13 +179,15 @@ def score_contact(contact: Contact, company: Company | None = None) -> tuple[int
 
 
 def rescore(company: Company, branches: int | None = None) -> None:
-    """Update the scores of a company and all its people, and the company's size estimate
-    (app/sizing.py). branches: the company's branches, when already counted for a whole
-    batch (sizing.branch_counts); None = count them now. The caller commits."""
+    """Update the scores of a company and all its people, the company's size estimate
+    (app/sizing.py) and its buying intent (app/intent.py, which reads the size).
+    branches: the company's branches, when already counted for a whole batch
+    (sizing.branch_counts); None = count them now. The caller commits."""
     company.score, company.score_reasons = score_company(company)
     for contact in company.contacts or []:
         contact.score, contact.score_reasons = score_contact(contact, company)
     apply_size(company, branches)
+    apply_intent(company)  # pure: no extra queries
 
 
 RECOMPUTE_BATCH = 200  # companies per database commit

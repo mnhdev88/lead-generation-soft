@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
+from .intent import apply_intent
 from .models import Company
 from .utils import own_domain
 
@@ -361,5 +362,6 @@ def refresh_branch_sizes(session: Session, domains) -> int:
         counts = branch_counts(session, companies)
         for company in companies:
             apply_size(company, counts[company.id])
+            apply_intent(company)  # the size feeds the intent scores (app/intent.py)
             n += 1
     return n

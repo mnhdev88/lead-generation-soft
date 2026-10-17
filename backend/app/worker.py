@@ -14,6 +14,7 @@ becomes a SaaS with many users, this moves to a separate process + Redis queue.
 import asyncio
 import logging
 import re
+import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,12 +32,13 @@ from .emails import find_people_emails, learn_pattern, normalize_email, verify_e
 from .emails.patterns import is_valid_pattern
 from .enrich import crawl_website, make_client
 from .dedupe import merge_if_duplicate
+from .intent import apply_intent
 from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from .people import classify
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import hunter
 from .scoring import recompute_scores, rescore
-from .sizing import refresh_branch_sizes, size_saved_companies
+from .sizing import branch_counts, refresh_branch_sizes, size_saved_companies
 from .sources import SOURCES, CompanyResult, SourceError
 from .usage import UsageLimitError, get_usage
 from .utils import extract_domain, normalize_url, own_domain
@@ -65,6 +67,20 @@ HUNTER_PATTERN_CONFIDENCE = 75  # Hunter's own guess of a domain's email pattern
 # at a time (a job the user starts then waits a few seconds at most).
 BACKFILL_LIMIT = 200
 BACKFILL_RECHECK_SECONDS = 300  # nothing left to fill in: look again after this long
+# Google PageSpeed back-fill (app/pagespeed.py): runs in its own thread, so a search the
+# user starts never waits for a test (one can take a minute). Websites per round, the pause
+# between rounds while there is work, and the pause when there is none (or Google said stop).
+PAGESPEED_BACKFILL_LIMIT = 1
+PAGESPEED_PAUSE_SECONDS = 5
+PAGESPEED_IDLE_SECONDS = BACKFILL_RECHECK_SECONDS
+# The typical review count of a search (Company.peer_reviews_median) is worked out per kind of
+# business (Google's primaryType, else the category) and needs this many results of that kind
+# with a review count, else it says nothing (a solo doctor is not compared with hospitals).
+PEER_MEDIAN_MIN_RESULTS = 5
+# Google search position (Company.search_rank) is only saved from searches asking for at most
+# this many results, and never from a deep (map tiles) search: in a big city-wide list,
+# position 35 says little about a business's SEO, and positions across tiles are meaningless.
+RANK_MAX_RESULTS = 20
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -115,6 +131,7 @@ def _upsert_company(session, source: str, r: CompanyResult) -> Company:
         session.add(company)
     website = normalize_url(r.website)
     source_emails = _source_emails(r.email)
+    old_website = company.website
     fields = {
         "name": r.name,
         "category": r.category,
@@ -155,10 +172,67 @@ def _upsert_company(session, source: str, r: CompanyResult) -> Company:
         fields["socials"] = {**r.socials, **(company.socials or {})}
     for name, value in fields.items():
         setattr(company, name, value)
+    if not is_new and company.website != old_website:
+        # The PageSpeed result was for the old website: the idle back-fill tests the new one.
+        company.pagespeed, company.pagespeed_checked_at = {}, None
+    _save_google_profile(company, r)
     apply_company_phone(company)
     _note_email_origin(company, source_emails, "source")
     session.flush()
     return company
+
+
+def _save_google_profile(company: Company, r: CompanyResult) -> None:
+    """Google's photo count and reviews, and what the reviews say (app/reviews.py). Only
+    when the result has them: a source without them (OpenStreetMap) never wipes them."""
+    photos = getattr(r, "photos_count", None)
+    found_reviews = getattr(r, "reviews", None) or []
+    if photos is not None:
+        company.google_photos_count = photos
+    if found_reviews:
+        company.google_reviews = list(found_reviews)
+        try:
+            from . import reviews  # here: written alongside this feature
+
+            company.review_signals = reviews.analyze_reviews(company.google_reviews, r.reviews_count)
+        except Exception:
+            log.exception("Could not read the reviews of %s", r.name)
+
+
+def _peer_kind(r: CompanyResult) -> str | None:
+    """Google's primaryType ("dentist"), else the category, to compare like with like."""
+    raw = r.raw if isinstance(r.raw, dict) else {}
+    kind = raw.get("primaryType") if isinstance(raw.get("primaryType"), str) else None
+    kind = kind or r.category
+    return kind.strip().lower() if isinstance(kind, str) and kind.strip() else None
+
+
+def _peer_reviews_median(results: list[CompanyResult]) -> int | None:
+    """Typical review count of a list of results (None with too few counts)."""
+    counts = [r.reviews_count for r in results if r.reviews_count is not None]
+    if len(counts) < PEER_MEDIAN_MIN_RESULTS:
+        return None
+    return int(statistics.median(counts))
+
+
+def _peer_medians(results: list[CompanyResult]) -> dict[str, int]:
+    """{kind of business: typical review count} for the kinds with enough results."""
+    groups: dict[str, list[CompanyResult]] = {}
+    for r in results:
+        kind = _peer_kind(r)
+        if kind:
+            groups.setdefault(kind, []).append(r)
+    medians = {kind: _peer_reviews_median(group) for kind, group in groups.items()}
+    return {kind: m for kind, m in medians.items() if m is not None}
+
+
+def _search_rank(r: CompanyResult, position: int) -> int | None:
+    """Google's own position of the result in its query when the source gives it (r.rank),
+    else its place in the list."""
+    rank = getattr(r, "rank", None)
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+        return position
+    return rank
 
 
 def _look_up_ppp(company: Company) -> None:
@@ -200,12 +274,20 @@ def run_search_job(session, job: SearchJob) -> None:
     domains = set()  # websites of the saved companies (to size their branches again below)
     merged = 0
     check_ppp = ppp.available()  # the US PPP loan data is downloaded (app/ppp.py)
-    for r in results:
+    peers = _peer_medians(results)  # for "fewer reviews than competitors" (app/intent.py)
+    # Positions only mean something in one small Google query (see RANK_MAX_RESULTS).
+    save_rank = source.name == "google" and job.limit is not None and job.limit <= RANK_MAX_RESULTS
+    for position, r in enumerate(results, start=1):
         company = _upsert_company(session, source.name, r)
         # The same business saved before (e.g. found on OpenStreetMap, now on Google)?
         company, removed_id = merge_if_duplicate(session, company)
         if check_ppp and company.ppp_checked_at is None:
             _look_up_ppp(company)
+        if save_rank:  # Google ranks its results: 1 = shown first. The latest search wins.
+            company.search_rank = _search_rank(r, position)
+        peer = peers.get(_peer_kind(r) or "")
+        if peer is not None:
+            company.peer_reviews_median = peer
         rescore(company)
         if company.domain:
             domains.add(company.domain)
@@ -219,6 +301,10 @@ def run_search_job(session, job: SearchJob) -> None:
     # them all again together, so each shows the same number of locations.
     if domains:
         refresh_branch_sizes(session, domains)
+        for company_id in seen:  # their size may have changed, and the intent reads it
+            company = session.get(Company, company_id)  # already loaded: no query
+            if company is not None:
+                apply_intent(company)
     job.result_count = job.total = job.processed = len(seen)
     job.status = "done"
     message = f"Found {len(seen)} businesses."
@@ -900,9 +986,11 @@ def recover_jobs() -> None:
 
 def _backfill_slice() -> bool:
     """Run while no job is waiting: give up to BACKFILL_LIMIT companies saved before sizing
-    existed a size estimate, and look up to BACKFILL_LIMIT US companies up in the PPP loan
-    data (app/ppp.py) once it is downloaded. Small slices, so a job the user starts never
-    waits long. Returns True when there was something to do (call again soon)."""
+    existed a size estimate, look up to BACKFILL_LIMIT US companies up in the PPP loan
+    data (app/ppp.py) once it is downloaded, and give companies saved before buying intent
+    existed their intent. Small slices, so a job the user starts never waits long. (Google
+    PageSpeed runs in its own thread: _pagespeed_loop.) Returns True when there was
+    something to do (call again soon)."""
     busy = False
     try:
         with SessionLocal() as session:
@@ -923,7 +1011,59 @@ def _backfill_slice() -> bool:
                         log.info("Looked up %d US companies in the PPP data: %d loans found", checked, matched)
     except Exception:
         log.exception("Could not look up the saved companies in the PPP data")
+    try:
+        with SessionLocal() as session:
+            n_intent = intent_saved_companies(session, limit=BACKFILL_LIMIT)
+        if n_intent:
+            busy = True
+            log.info("Scored the buying intent of %d companies saved earlier", n_intent)
+    except Exception:
+        log.exception("Could not score the buying intent of the existing companies")
     return busy
+
+
+def pagespeed_round() -> int:
+    """Test up to PAGESPEED_BACKFILL_LIMIT saved websites with Google PageSpeed
+    (app/pagespeed.py), in a session of its own. Returns how many results were saved."""
+    if not config.PAGESPEED_ENABLED:
+        return 0
+    from . import pagespeed  # here: it imports the scoring code, which imports a lot
+
+    with SessionLocal() as session:
+        return pagespeed.check_saved_companies(session, limit=PAGESPEED_BACKFILL_LIMIT)
+
+
+def _pagespeed_loop(stop: threading.Event) -> None:
+    """Own thread: PageSpeed tests take up to a minute each, and the job thread must stay
+    free to start a search the user queues. Pauses briefly between tests while there is
+    work, and longer when there is none or Google said stop (quota, no internet)."""
+    while not stop.is_set():
+        pause = PAGESPEED_IDLE_SECONDS
+        try:
+            n_checked = pagespeed_round()
+            if n_checked:
+                log.info("Checked %d websites with Google PageSpeed", n_checked)
+                pause = PAGESPEED_PAUSE_SECONDS
+        except Exception:
+            log.exception("Could not check the saved websites with Google PageSpeed")
+        stop.wait(pause)
+
+
+def intent_saved_companies(session, limit: int = BACKFILL_LIMIT) -> int:
+    """Companies saved before buying intent existed (intent_best_score NULL) are rescored,
+    which also gives them their intent (app/intent.py). Afterwards intent_best_score is set
+    (0 when nothing fits), so the next call skips them. Returns how many were rescored."""
+    batch = list(session.scalars(
+        select(Company).options(selectinload(Company.contacts))
+        .where(Company.intent_best_score.is_(None)).order_by(Company.id).limit(limit)
+    ))
+    if not batch:
+        return 0
+    branches = branch_counts(session, batch)  # one query for the batch, not one per company
+    for company in batch:
+        rescore(company, branches[company.id])
+    session.commit()
+    return len(batch)
 
 
 def _loop(stop: threading.Event) -> None:
@@ -980,4 +1120,5 @@ def _loop(stop: threading.Event) -> None:
 def start_worker() -> threading.Event:
     stop = threading.Event()
     threading.Thread(target=_loop, args=(stop,), daemon=True, name="job-worker").start()
+    threading.Thread(target=_pagespeed_loop, args=(stop,), daemon=True, name="pagespeed").start()
     return stop

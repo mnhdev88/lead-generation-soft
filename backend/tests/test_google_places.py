@@ -139,7 +139,7 @@ def test_mapping_and_request_shape(api_key, usage_calls):
     body, headers = fake.requests[0], fake.headers[0]
     assert body == {"textQuery": "dentist in Karachi, Pakistan", "pageSize": 20}
     assert headers["X-Goog-Api-Key"] == "test-key"
-    assert headers["X-Goog-FieldMask"] == gp.FIELD_MASK
+    assert headers["X-Goog-FieldMask"] == gp.field_mask()
     assert "nextPageToken" in gp.FIELD_MASK.split(",")
 
     [c] = results
@@ -167,6 +167,58 @@ def test_mapping_fallbacks():
     assert c.category == "dentist"
     assert c.opening_hours is None
     assert gp._to_company({"id": "x"}) is None  # no name -> skipped
+
+
+def google_review(rating=2, text="Nobody answers the phone.", **extra) -> dict:
+    review = {
+        "name": "places/x/reviews/1",
+        "relativePublishTimeDescription": "2 months ago",
+        "rating": rating,
+        "text": {"text": text, "languageCode": "en"},
+        "originalText": {"text": text, "languageCode": "en"},
+        "authorAttribution": {"displayName": "Sam", "uri": "https://maps.google.com/contrib/1"},
+        "publishTime": "2026-08-01T10:20:30.123456789Z",
+    }
+    review.update(extra)
+    return review
+
+
+def test_reviews_and_photos(api_key, usage_calls, monkeypatch):
+    monkeypatch.setattr(config, "GOOGLE_PLACES_REVIEWS", True)
+    place = make_place(1, photos=[{"name": f"places/1/photos/{k}"} for k in range(10)], reviews=[
+        google_review(),
+        google_review(rating=5, text="x" * 1500, publishTime=None, relativePublishTimeDescription=None),
+        # No translated text: fall back to the original.
+        google_review(rating=4.0, text=None, originalText={"text": "  Bueno  ", "languageCode": "es"}),
+        google_review(rating=None, text=None, originalText=None),  # nothing useful -> skipped
+        "odd entry",
+    ])
+    fake = FakeGoogle(pages=[[place, make_place(2)]])
+    results, _ = run(fake)
+
+    mask = fake.headers[0]["X-Goog-FieldMask"].split(",")
+    assert "places.reviews" in mask and "places.photos" in mask
+
+    one, two = results
+    assert one.photos_count == 10
+    assert one.reviews == [
+        {"rating": 2, "text": "Nobody answers the phone.", "publish_time": "2026-08-01T10:20:30.123456789Z",
+         "relative": "2 months ago"},
+        {"rating": 5, "text": "x" * 1000, "publish_time": None, "relative": None},
+        {"rating": 4, "text": "Bueno", "publish_time": "2026-08-01T10:20:30.123456789Z", "relative": "2 months ago"},
+    ]
+    assert "reviews" not in one.raw and "photos" not in one.raw  # not stored twice
+    assert two.photos_count == 0 and two.reviews == []  # no photos/reviews at Google
+
+
+def test_reviews_switched_off(api_key, usage_calls, monkeypatch):
+    monkeypatch.setattr(config, "GOOGLE_PLACES_REVIEWS", False)
+    place = make_place(1, photos=[{"name": "p"}], reviews=[google_review()])
+    fake = FakeGoogle(pages=[[place]])
+    [c], _ = run(fake)
+    assert fake.headers[0]["X-Goog-FieldMask"] == gp.FIELD_MASK
+    assert "places.reviews" not in gp.FIELD_MASK
+    assert c.photos_count is None and c.reviews == []
 
 
 def test_pagination_follows_next_page_token(api_key, usage_calls):

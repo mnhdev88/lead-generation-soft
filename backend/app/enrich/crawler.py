@@ -1,5 +1,6 @@
 """Visit a business website and collect emails, phones, social links, people and
-"website signals" from its homepage plus a few likely contact/about/team pages.
+"website signals" from its homepage plus a few likely contact/about/team pages (and the
+careers page, when the page budget allows, to read the job titles).
 
     data = await crawl_website("example.com")
     if data.ok:
@@ -31,7 +32,7 @@ import re
 import socket
 import zlib
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
 import httpcore
@@ -53,6 +54,10 @@ MAX_EMAILS = 30  # per website
 MAX_PEOPLE = 50  # per website
 ALLOWED_PORTS = {None, 80, 443, 8080, 8443}  # normal web ports only (no port scanning)
 ROBOTS_AGENT = "LeadGenSoft"  # name we match against "User-agent:" lines in robots.txt
+# When a site answers on http://, one quick look at its https:// address (seconds), so a
+# site that has a working certificate but doesn't redirect is not called "No SSL".
+HTTPS_CHECK_TIME = 8.0
+HTTPS_CHECK_BYTES = 64 * 1024
 
 # The headers a normal browser sends when you open a page. We only advertise the
 # compressions we can decode ourselves (brotli/zstd are not installed).
@@ -82,7 +87,10 @@ class WebsiteData:
     # https, platform, copyright_year, has_contact_form, title, description,
     # pages_crawled, final_url, status_code, and the size hints: employees_stated,
     # employees_from, employees_snippet, founded_year, founded_snippet, locations_stated,
-    # has_careers, careers_url
+    # has_careers, careers_url, and the buying-intent hints: has_analytics,
+    # has_search_console, ad_pixels, has_local_schema, has_online_booking, booking_provider,
+    # has_online_payment, has_shop, has_online_ordering, has_pdf_forms, has_live_chat,
+    # has_viewport, hiring_roles, hiring_titles
     signals: dict = field(default_factory=dict)
 
 
@@ -455,7 +463,48 @@ def _empty_signals() -> dict:
             # Size hints the site states about itself (see extract._size_signals_from)
             "employees_stated": None, "employees_from": None, "employees_snippet": None,
             "founded_year": None, "founded_snippet": None, "locations_stated": None,
-            "has_careers": False, "careers_url": None}
+            "has_careers": False, "careers_url": None,
+            # Buying-intent hints (see extract._intent_signals_from). has_viewport is None
+            # ("unknown") until the homepage was read.
+            "has_analytics": False, "has_search_console": False, "ad_pixels": [],
+            "has_local_schema": False, "has_online_booking": False, "booking_provider": None,
+            "has_online_payment": False, "has_shop": False, "has_online_ordering": False,
+            "has_pdf_forms": False, "has_live_chat": False, "has_viewport": None,
+            "has_tag_manager": False,
+            "hiring_roles": [], "hiring_titles": []}
+
+
+# Intent hints: True on any page = True for the website; lists are joined.
+_INTENT_BOOL_KEYS = ("has_analytics", "has_search_console", "has_local_schema", "has_online_booking",
+                     "has_online_payment", "has_shop", "has_online_ordering", "has_pdf_forms",
+                     "has_live_chat")
+_INTENT_LIST_CAPS = {"ad_pixels": 10, "hiring_roles": 20, "hiring_titles": 10}
+
+
+def _merge_intent_signals(signals: dict, page_signals: list[dict]) -> None:
+    """Combine the intent hints of all pages (homepage first). Booleans: True when any page
+    says True, else False when at least one page could tell (said False), else None
+    ("can't tell", e.g. every page was built by JavaScript). Lists: joined, sorted, capped;
+    ad_pixels is None when no page could tell. Booking provider: the first one found.
+    has_viewport: from the homepage only (it says whether the site is built for phones)."""
+    for key in _INTENT_BOOL_KEYS:
+        values = [p.get(key) for p in page_signals]
+        if any(v is True for v in values):
+            signals[key] = True
+        elif any(v is False for v in values):
+            signals[key] = False
+        else:
+            signals[key] = None
+    for key, cap in _INTENT_LIST_CAPS.items():
+        values = {v for p in page_signals for v in (p.get(key) or []) if isinstance(v, str)}
+        signals[key] = sorted(values)[:cap]
+    if not signals["ad_pixels"] and not any(isinstance(p.get("ad_pixels"), list) for p in page_signals):
+        signals["ad_pixels"] = None
+    signals["booking_provider"] = next((p["booking_provider"] for p in page_signals
+                                        if p.get("booking_provider")), None)
+    signals["has_tag_manager"] = any(p.get("has_tag_manager") is True for p in page_signals)
+    home = page_signals[0] if page_signals else {}
+    signals["has_viewport"] = home.get("has_viewport") if isinstance(home.get("has_viewport"), bool) else None
 
 
 def _merge_size_signals(signals: dict, page_signals: list[dict]) -> None:
@@ -483,6 +532,21 @@ def _merge_size_signals(signals: dict, page_signals: list[dict]) -> None:
         if page.get("has_careers"):
             signals["has_careers"] = True
             signals["careers_url"] = signals["careers_url"] or page.get("careers_url")
+
+
+def _careers_key(careers_url: str | None, home_domain: str) -> str | None:
+    """url_key of a careers page on this website (job sites such as greenhouse.io are
+    never fetched), or None."""
+    if not careers_url:
+        return None
+    careers_url = urldefrag(careers_url)[0]
+    try:
+        careers_host = urlparse(careers_url).hostname
+    except ValueError:
+        return None
+    if not careers_url.startswith(("http://", "https://")) or registered_domain(careers_host) != home_domain:
+        return None
+    return url_key(careers_url)
 
 
 def _failure(error: str, fetched: _Fetched | None = None) -> WebsiteData:
@@ -523,6 +587,25 @@ async def _retry_blocked_homepage(session: _Session, robots: _Robots, blocked: _
     return blocked
 
 
+async def _https_works(session: _Session, http_url: str) -> bool | None:
+    """The homepage answered on http://. Does the same address answer on https:// with a
+    valid certificate? True / False, or None when we can't tell (timeout, out of time)."""
+    loop = asyncio.get_running_loop()
+    deadline = min(session.deadline, loop.time() + HTTPS_CHECK_TIME)
+    if deadline <= loop.time():
+        return None
+    probe = _Session(session.client, deadline, session.dns_cache)
+    fetched = await _fetch(probe, "https://" + http_url[len("http://"):], html_only=False,
+                           max_bytes=HTTPS_CHECK_BYTES)
+    if fetched.status is not None:
+        # Any answer (even 404) came over a valid certificate. If it sent us back to
+        # http://, visitors never get the secure version.
+        return fetched.url.startswith("https://")
+    if fetched.kind in ("ssl", "connect"):
+        return False  # bad / missing certificate, or nothing listening on https
+    return None
+
+
 async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> WebsiteData:
     start = _normalize_start_url(url)
     if not start:
@@ -549,6 +632,18 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
     # Parsing is CPU work; a thread keeps other crawls running meanwhile.
     pages = [(home.url, await asyncio.to_thread(analyze_page, home.text, home.url))]
     visited = {url_key(start), url_key(home.url)}
+    # We were given an http:// address (often what Google lists) and the site answered there
+    # without sending us to https://. Many sites work on both: check https:// once, so a
+    # site with a working certificate is not called "No SSL".
+    https: bool | None = home.url.startswith("https://")
+    if not https and start.startswith("http://"):
+        https = await _https_works(session, home.url)
+    # The careers page the homepage links to, read with its job titles when it is also one
+    # of the pages below (e.g. /join-our-team, which looks like a "team" page).
+    careers_key = _careers_key(pages[0][1].signals.get("careers_url"), home_domain)
+    # Page text by url_key, so a page fetched before we knew it was the careers page can be
+    # read again for job titles without downloading it twice.
+    texts: dict[str, tuple[str, str]] = {}
 
     # 2. Likely contact / about / team pages: up to two rounds (homepage links, then
     #    links found on those pages, e.g. About -> Our Team).
@@ -556,7 +651,7 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
     budget = max(0, max_pages - 1)
     semaphore = asyncio.Semaphore(PAGE_CONCURRENCY)
 
-    async def fetch_page(page_url: str):
+    async def fetch_page(page_url: str, careers: bool = False):
         async with semaphore:
             if await robots.check(page_url) != "allow":
                 return None
@@ -565,7 +660,8 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
             return None
         if registered_domain(urlparse(fetched.url).hostname) != home_domain:
             return None  # redirected to another website
-        return fetched.url, await asyncio.to_thread(analyze_page, fetched.text, fetched.url)
+        texts[url_key(page_url)] = (fetched.url, fetched.text)
+        return fetched.url, await asyncio.to_thread(analyze_page, fetched.text, fetched.url, careers)
 
     for _round in range(2):
         batch: list[str] = []
@@ -579,14 +675,32 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
         if not batch or session.time_left() <= 0:
             break
         budget -= len(batch)
-        results = await asyncio.gather(*(fetch_page(u) for u in batch))
+        results = await asyncio.gather(*(fetch_page(u, careers=url_key(u) == careers_key) for u in batch))
         queue = []
         for result in results:
             if result:
                 pages.append(result)
                 queue.extend(result[1].links)
 
-    # 3. Merge everything, homepage first
+    # 3. The careers page (on this website only; job sites such as greenhouse.io are not
+    #    fetched), as one extra page when the page budget allows: its job titles show
+    #    which roles the business is hiring for.
+    careers_url = next((info.signals["careers_url"] for _page_url, info in pages
+                        if info.signals.get("careers_url")), None)
+    found_key = _careers_key(careers_url, home_domain)
+    if found_key and found_key != careers_key and found_key in texts:
+        # Already fetched as an ordinary page (found on a sub-page, after the homepage):
+        # read it again for its job titles. No extra request.
+        page_url, text = texts[found_key]
+        info = await asyncio.to_thread(analyze_page, text, page_url, True)
+        pages = [(u, info) if url_key(u) == url_key(page_url) else (u, i) for u, i in pages]
+    elif found_key and found_key not in visited and budget > 0 and session.time_left() > 0:
+        visited.add(found_key)
+        result = await fetch_page(urldefrag(careers_url)[0], careers=True)
+        if result:
+            pages.append(result)
+
+    # 4. Merge everything, homepage first
     emails: list[str] = []
     seen_emails: set[str] = set()
     phones: list[str] = []
@@ -617,8 +731,9 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
         if info.signals.get("has_contact_form"):
             signals["has_contact_form"] = True
     _merge_size_signals(signals, [info.signals for _page_url, info in pages])
+    _merge_intent_signals(signals, [info.signals for _page_url, info in pages])
     signals.update({
-        "https": home.url.startswith("https://"),
+        "https": https,
         "pages_crawled": len(pages),
         "final_url": home.url,
         "status_code": home.status,

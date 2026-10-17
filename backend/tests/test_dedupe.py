@@ -256,3 +256,67 @@ def test_search_merge_looks_up_ppp_with_the_better_name(db, monkeypatch):
     google = CompanyResult(name="Smile Dental Clinic", source_ref="g1", phone="(512) 351-8010", lat=LAT, lon=LON)
     run_search(db, monkeypatch, "google", [google])
     assert looked_up == ["Smile Dental", "Smile Dental Clinic"]
+
+
+# ----- Google profile, PageSpeed and search position on merge (intent review) --------------
+
+
+def test_search_merge_keeps_the_google_profile_of_the_removed_copy(db, monkeypatch):
+    """OpenStreetMap first, then Google: the Google copy is the one deleted, so its photos,
+    reviews and what the reviews say must move to the kept company (no paid search again)."""
+    osm = CompanyResult(name="Smile Dental", source_ref="node/1", phone="+1 512-351-8010", lat=LAT, lon=LON,
+                        category="Dentist")
+    run_search(db, monkeypatch, "osm", [osm])
+    review = {"rating": 1, "text": "Nobody answers the phone and I could not book an appointment.",
+              "publish_time": "2026-01-05T10:00:00Z", "relative": None}
+    google = CompanyResult(name="Smile Dental Clinic", source_ref="g1", phone="(512) 351-8010", lat=LAT, lon=LON,
+                           category="Dentist", rating=4.1, reviews_count=8, photos_count=2,
+                           reviews=[review], business_status="OPERATIONAL")
+    run_search(db, monkeypatch, "google", [google])
+
+    companies = db.scalars(select(Company)).all()
+    assert len(companies) == 1
+    c = companies[0]
+    assert c.google_photos_count == 2 and c.google_reviews == [review]
+    assert c.review_signals.get("pain_points"), c.review_signals
+    assert "Weak Google profile (8 reviews, 2 photos) +15" in c.intent["seo"]["reasons"]
+
+
+def test_merge_all_keeps_pagespeed_rank_and_peers(db):
+    from datetime import datetime, timezone
+
+    checked = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    keep = company(ref="node/1", phone="+1 512-351-8010", website="https://smile.example", domain="smile.example")
+    drop = company(source="google", ref="g1", phone="+1 512-351-8010", website="https://smile.example",
+                   domain="smile.example", pagespeed={"performance": 30, "seo": 90}, pagespeed_checked_at=checked,
+                   search_rank=3, peer_reviews_median=50, google_photos_count=7)
+    db.add_all([keep, drop])
+    db.commit()
+    assert merge_all_duplicates(db) == 1
+    c = db.scalar(select(Company))
+    assert c.pagespeed == {"performance": 30, "seo": 90} and c.pagespeed_checked_at is not None
+    assert (c.search_rank, c.peer_reviews_median, c.google_photos_count) == (3, 50, 7)
+
+
+def test_merge_takes_the_better_search_rank():
+    a = company(ref="node/1", search_rank=8, peer_reviews_median=40)
+    b = company(source="google", ref="g1", search_rank=3)
+    merged = Company()
+    dedupe._merge_google_profile(merged, b, a)
+    assert merged.search_rank == 3 and merged.peer_reviews_median == 40
+
+
+def test_merge_drops_pagespeed_of_a_replaced_website(db):
+    from datetime import datetime, timezone
+
+    checked = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    # keep only had a Facebook page (tested); drop has the business's own site (not tested yet).
+    keep = company(ref="node/1", phone="+1 512-351-8010", website="https://facebook.com/smile",
+                   domain="facebook.com", pagespeed={"performance": 20}, pagespeed_checked_at=checked)
+    drop = company(source="google", ref="g1", phone="+1 512-351-8010", website="https://smile.example",
+                   domain="smile.example")
+    db.add_all([keep, drop])
+    db.commit()
+    merged = merge_companies(db, keep, drop)
+    assert merged.website == "https://smile.example"
+    assert merged.pagespeed == {} and merged.pagespeed_checked_at is None  # the back-fill tests the new site

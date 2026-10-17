@@ -28,6 +28,8 @@ COMPANY_HEADERS = [
     # Company size (app/sizing.py) and the US PPP loan (app/ppp.py)
     "size_band", "employees", "employees_source", "founded_year", "locations", "hiring",
     "ppp_jobs", "ppp_loan_date",
+    # Buying intent per service (app/intent.py); reasons = those of the best service
+    "intent_best", "intent_website", "intent_seo", "intent_software", "intent_marketing", "intent_reasons",
 ]
 
 PEOPLE_HEADERS = [
@@ -73,6 +75,12 @@ def best_decision_maker(company: Company) -> Contact | None:
     return min(deciders, key=lambda c: (not c.email, SENIORITY_RANK.get(c.seniority, 9), c.id or 0))
 
 
+def _intent_reasons(company: Company) -> str:
+    """Reasons of the company's best service: 'No SSL (http only) +15; No website +30'."""
+    best = (company.intent or {}).get(company.intent_best) if company.intent_best else None
+    return "; ".join(best.get("reasons") or []) if isinstance(best, dict) else ""
+
+
 def company_table(companies: Iterable[Company]) -> tuple[list[str], list[list[Cell]]]:
     rows = []
     for c in companies:
@@ -100,6 +108,8 @@ def company_table(companies: Iterable[Company]) -> tuple[list[str], list[list[Ce
             c.size_band, c.employees, c.employees_source, c.founded_year, c.locations_count,
             _yes_no(bool(signals.get("has_careers"))) if size_facts else "",
             ppp.get("jobs"), ppp.get("date_approved"),
+            c.intent_best, c.intent_website, c.intent_seo, c.intent_software, c.intent_marketing,
+            _intent_reasons(c),
         ])
     return list(COMPANY_HEADERS), rows
 

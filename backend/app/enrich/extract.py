@@ -9,6 +9,7 @@ Main entry points:
     extract_emails / extract_phones / extract_socials / extract_people
     detect_signals(html, page_url)      -> dict (platform, copyright year, ...)
     detect_size_signals(html, page_url) -> dict (stated headcount, founded year, branches, careers link)
+    detect_intent_signals(html, page_url) -> dict (analytics, ad pixels, booking, payment, chat, jobs...)
     find_candidate_links(html, base_url)-> same-site URLs worth crawling (contact, about, team...)
     rank_emails(emails, site)           -> emails sorted best-first for that website
 
@@ -115,6 +116,43 @@ _MAX_DEPTH = 400
 _MAX_LINKS = 5000
 # Marks the place of an inline tag in the page text (see _PageParser.text).
 _INLINE_MARK = "\x00"
+# Script / iframe / form addresses and inline script code kept per page (for the
+# "intent" signals: analytics tags, booking widgets, chat widgets...).
+_MAX_SRCS = 500
+_INLINE_SCRIPT_LIMIT = 300_000  # characters of inline script code, all scripts together
+# <script type="..."> values that hold JavaScript ("text/plain" is what cookie-consent tools
+# use for tags that wait for consent). JSON data blocks and templates are skipped: they can
+# contain any text (blog posts, CMS content).
+_JS_TYPES = {"", "text/javascript", "application/javascript", "module", "text/partytown",
+             "text/plain", "application/x-javascript", "text/ecmascript", "text/x-javascript"}
+# <script type="..."> values (or parts of them) that hold data or templates, not code.
+_DATA_SCRIPT_TYPE_PARTS = ("json", "template", "tmpl", "html", "importmap", "speculationrules",
+                           "shader", "handlebars", "mustache", "markdown", "text/x-")
+# Speed plugins (WP Rocket, LiteSpeed, Perfmatters, Cloudflare Rocket Loader...) and consent
+# tools rename a script's type ("rocketlazyloadscript", "litespeed/javascript",
+# "4d1c...-text/javascript") and move its address to one of these attributes, so the browser
+# only runs it later. It is still the site's code, so we read it like any other script.
+_SCRIPT_SRC_ATTRS = ("src", "data-src", "data-rocket-src", "data-litespeed-src", "data-cmplz-src",
+                     "data-lazy-src", "data-pagespeed-orig-src")
+# Element ids that JavaScript apps (React, Vue, Next.js, Gatsby, Svelte...) render the page into.
+_APP_MOUNT_IDS = {"root", "app", "__next", "___gatsby", "__nuxt", "svelte", "q-app", "main-app"}
+
+
+# "add-to-cart", "add_to_cart", "addtocart", Shopify's "/cart/add" form
+_ADD_TO_CART_RE = re.compile(r"add[-_ ]?to[-_ ]?cart|/cart/add\b")
+
+
+def _script_type(attrs: dict[str, str]) -> str:
+    """'js' (code that runs now), 'delayed' (code a speed plugin runs later, see
+    _SCRIPT_SRC_ATTRS) or 'data' (JSON, templates: any text, never read as code)."""
+    kind = attrs.get("type", "").strip().lower()
+    if kind in _JS_TYPES:
+        return "js"
+    if "javascript" in kind or "ecmascript" in kind:
+        return "delayed"  # Cloudflare Rocket Loader "<hash>-text/javascript", "litespeed/javascript"
+    if any(part in kind for part in _DATA_SCRIPT_TYPE_PARTS):
+        return "data"
+    return "delayed"  # "rocketlazyloadscript", "pmdelayedscript", "text/rocketscript"...
 
 
 def _is_menu(tag: str, attrs: dict[str, str]) -> bool:
@@ -162,6 +200,23 @@ class _PageParser(HTMLParser):
         self._jsonld_buf: list[str] | None = None
         self.cf_hex: list[str] = []  # Cloudflare-protected emails (still encoded)
         self.has_contact_form = False
+        # For the intent signals (see _intent_signals_from)
+        self.script_srcs: list[str] = []
+        self.iframe_srcs: list[str] = []
+        self.form_actions: list[str] = []
+        self.itemtypes: list[str] = []  # microdata itemtype="https://schema.org/Dentist"
+        self.inline_script_parts: list[str] = []
+        self._inline_script_size = 0
+        self._in_inline_script = False
+        self.has_add_to_cart = False  # "add to cart" buttons / forms
+        self.scripts_delayed = False  # a speed plugin renamed the scripts (see _script_type)
+        self.has_mobile_alternate = False  # <link rel="alternate" media="...max-width..."> (m. site)
+        # How much text a visitor sees, and whether a JavaScript app's mount element
+        # (<div id="root"></div>) was left empty: then the page is built in the browser and
+        # its HTML cannot tell us what the site lacks.
+        self.visible_chars = 0
+        self.empty_app_mount = False
+        self._mounts_open: dict[int, int] = {}  # element id -> visible_chars when it opened
 
     # -- helpers --
     def _cards(self) -> tuple[int, ...]:
@@ -184,9 +239,15 @@ class _PageParser(HTMLParser):
         if tag in _HIDDEN_TAGS:
             self._hidden_open += 1
 
+    def _close_mount(self, element_id: int) -> None:
+        if element_id in self._mounts_open:
+            if self._mounts_open.pop(element_id) == self.visible_chars:
+                self.empty_app_mount = True
+
     def _pop_to(self, idx: int) -> None:
         """Close stack[idx] and everything opened after it."""
         for tag, _id, _cards, menu in self.stack[idx:]:
+            self._close_mount(_id)
             self._open[tag] -= 1
             if menu:
                 self._menus_open -= 1
@@ -239,6 +300,33 @@ class _PageParser(HTMLParser):
             self.has_contact_form = True
         elif tag == "script" and "ld+json" in a.get("type", "").lower():
             self._jsonld_buf = []
+        elif tag == "script":
+            kind = _script_type(a)
+            src = next((a[k].strip() for k in _SCRIPT_SRC_ATTRS if a.get(k, "").strip()), "")
+            if kind == "delayed" or (src and src != a.get("src", "").strip()):
+                self.scripts_delayed = True
+            if kind != "data" and src:
+                if len(self.script_srcs) < _MAX_SRCS:
+                    self.script_srcs.append(src[:2000])
+            elif kind != "data":
+                self._in_inline_script = True
+        elif tag == "link":
+            rel = a.get("rel", "").lower().split()
+            if "alternate" in rel and "max-width" in a.get("media", "").lower() and a.get("href", "").strip():
+                self.has_mobile_alternate = True
+        elif tag == "iframe":
+            src = (a.get("src") or a.get("data-src") or "").strip()
+            if src and len(self.iframe_srcs) < _MAX_SRCS:
+                self.iframe_srcs.append(src[:2000])
+        if tag == "form" and a.get("action", "").strip() and len(self.form_actions) < _MAX_SRCS:
+            self.form_actions.append(a["action"].strip()[:2000])
+        if "itemtype" in a and len(self.itemtypes) < _MAX_SRCS:
+            self.itemtypes.append(a["itemtype"][:500])
+        if tag in ("a", "button", "input", "form") and not self.has_add_to_cart:
+            marks = " ".join(a.get(k, "")[:300] for k in ("class", "name", "id", "href", "action",
+                                                          "data-action")).lower()
+            if _ADD_TO_CART_RE.search(marks):
+                self.has_add_to_cart = True
 
         if tag in _VOID_TAGS:
             return
@@ -247,6 +335,8 @@ class _PageParser(HTMLParser):
             self._pop_to(len(self.stack) - 1)
         if len(self.stack) < _MAX_DEPTH:
             self._push(tag, _is_menu(tag, a))
+            if a.get("id", "").strip().lower() in _APP_MOUNT_IDS and len(self._mounts_open) < 10:
+                self._mounts_open[self._next_id] = self.visible_chars
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -261,6 +351,9 @@ class _PageParser(HTMLParser):
         if tag == "script" and self._jsonld_buf is not None:
             self.jsonld.append("".join(self._jsonld_buf))
             self._jsonld_buf = None
+        if tag == "script" and self._in_inline_script:
+            self._in_inline_script = False
+            self.inline_script_parts.append("\n")
         if not self._open.get(tag):
             return  # stray end tag
         # Close the matching open tag (and anything left open inside it).
@@ -273,11 +366,19 @@ class _PageParser(HTMLParser):
         if self._jsonld_buf is not None:
             self._jsonld_buf.append(data)
             return
+        if self._in_inline_script:
+            room = _INLINE_SCRIPT_LIMIT - self._inline_script_size
+            if room > 0:
+                self.inline_script_parts.append(data[:room])
+                self._inline_script_size += min(len(data), room)
+            return
         if self.stack and self.stack[-1][0] == "title":
             self.title_parts.append(data)
             return
         if self._hidden():
             return
+        if self.visible_chars < 100_000:
+            self.visible_chars += len(" ".join(data.split()))
         self._buf.append(data)
         self.text_parts.append(data)
         if self._open_link is not None:
@@ -289,6 +390,8 @@ class _PageParser(HTMLParser):
         finally:
             self._flush()
             self._close_link()
+            for element_id in list(self._mounts_open):  # mount elements never closed
+                self._close_mount(element_id)
 
     @property
     def text(self) -> str:
@@ -1794,6 +1897,733 @@ def detect_size_signals(html: str, page_url: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Intent signals (what the website already has: analytics, ads, booking, chat...)
+# ---------------------------------------------------------------------------
+#
+# They hint at which services a business may need: no online booking -> software, no
+# analytics -> SEO, ad pixels -> they already pay for marketing. Precision first: a signal
+# is True only on clear technical evidence (a script, iframe, form or link of a known
+# provider, a meta tag, JSON-LD), never because a word appears in the visible text
+# ("Online booking coming soon!", a privacy policy that mentions Google Analytics).
+# Everything is a dictionary lookup or a plain substring search over capped lists, so it
+# stays fast on hostile pages.
+
+MAX_JOB_TITLES = 10
+JOB_TITLE_LIMIT = 80  # characters per job title we keep
+# A page with less visible text than this (or an empty <div id="root"></div>) is built by
+# JavaScript in the browser. We never run JavaScript, so on such a page "we found no
+# booking / chat / schema" means "we can't tell", not "they have none".
+THIN_PAGE_CHARS = 200
+
+
+@dataclass
+class _Ref:
+    """One address the page points to: a link, script, iframe or form."""
+    kind: str  # "link", "script", "iframe" or "form"
+    host: str
+    domain: str  # registered domain of the host ("" for a relative address without a page URL)
+    path: str  # lowercase
+    query: str  # lowercase
+    text: str = ""  # link text
+
+
+def _refs_from(parser: _PageParser, page_url: str) -> list[_Ref]:
+    sources = ([("script", src, "") for src in parser.script_srcs]
+               + [("iframe", src, "") for src in parser.iframe_srcs]
+               + [("form", action, "") for action in parser.form_actions]
+               + [("link", link.href, link.text) for link in parser.links[:_MAX_LINKS]])
+    refs: list[_Ref] = []
+    for kind, raw, text in sources:
+        raw = raw.strip()
+        if not raw or raw.startswith("#") or raw[:11].lower().startswith(("mailto:", "tel:", "javascript:", "data:", "sms:")):
+            continue
+        try:
+            parsed = urlparse(_resolve(raw, page_url))
+            host = (parsed.hostname or "").lower().rstrip(".")
+        except ValueError:
+            continue
+        if parsed.scheme.lower() not in ("http", "https", ""):
+            continue
+        refs.append(_Ref(kind, host, registered_domain(host), parsed.path.lower(), parsed.query.lower(),
+                         " ".join(text.split())[:100]))
+    return refs
+
+
+def _inline_code(parser: _PageParser) -> str:
+    return "".join(parser.inline_script_parts)
+
+
+def _is_resource(ref: _Ref) -> bool:
+    """A script or iframe (code that runs on the page), not a link to somewhere."""
+    return ref.kind in ("script", "iframe")
+
+
+# -- Analytics / Search Console / ad pixels ------------------------------------
+
+_GA_CONFIG_RE = re.compile(r"""gtag\(\s{0,5}['"]config['"]\s{0,5},\s{0,5}['"](?:G|UA|GT)-[A-Z0-9-]{4,20}['"]""", re.I)
+_GA_CREATE_RE = re.compile(r"""\bga\(\s{0,5}['"]create['"]\s{0,5},\s{0,5}['"]UA-\d""", re.I)
+# Substrings of inline code that load Google Analytics / Tag Manager
+_GA_CODE_MARKS = ("googletagmanager.com/gtm.js", "googletagmanager.com/gtag/js?id=g-",
+                  "googletagmanager.com/gtag/js?id=ua-", "googletagmanager.com/gtag/js?id=gt-",
+                  "google-analytics.com/analytics.js", "google-analytics.com/ga.js",
+                  "google-analytics.com/urchin.js")
+_AW_RE = re.compile(r"(?<![A-Za-z0-9])AW-\d{6,12}(?!\d)")  # Google Ads ids are upper case
+_FBQ_INIT_RE = re.compile(r"""fbq\(\s{0,5}['"]init['"]""")
+_GTM_ID_RE = re.compile(r"(?<![A-Za-z0-9])GTM-[A-Z0-9]{4,10}(?![A-Za-z0-9])")
+
+
+def _has_tag_manager(refs: list[_Ref], code: str, code_lower: str) -> bool:
+    """A Google Tag Manager container. It can add chat widgets and ad pixels to the page
+    after it loads, so their absence from the HTML proves nothing."""
+    for ref in refs:
+        if _is_resource(ref) and ref.domain == "googletagmanager.com" and ("gtm.js" in ref.path or "ns.html" in ref.path):
+            return True
+    return "googletagmanager.com/gtm.js" in code_lower or bool(_GTM_ID_RE.search(code))
+
+
+def _has_analytics(refs: list[_Ref], code_lower: str) -> bool:
+    for ref in refs:
+        if not _is_resource(ref):
+            continue
+        if ref.domain == "google-analytics.com":
+            return True
+        if ref.domain == "googletagmanager.com":
+            if "gtm.js" in ref.path or "ns.html" in ref.path:
+                return True  # Google Tag Manager container
+            if "gtag/js" in ref.path:
+                ids = parse_qs(ref.query).get("id", [""])
+                # "AW-..." alone is a Google Ads tag, not analytics
+                if any(i.startswith(("g-", "ua-", "gt-")) for i in ids):
+                    return True
+    if any(mark in code_lower for mark in _GA_CODE_MARKS):
+        return True
+    return bool(_GA_CONFIG_RE.search(code_lower) or _GA_CREATE_RE.search(code_lower))
+
+
+def _ad_pixels(refs: list[_Ref], code: str, code_lower: str) -> list[str]:
+    found: set[str] = set()
+    resources = [r for r in refs if _is_resource(r)]
+    for ref in resources:
+        if ref.domain == "googleadservices.com" or ref.host == "googleads.g.doubleclick.net":
+            found.add("google_ads")
+        if ref.domain == "googletagmanager.com" and "id=aw-" in ref.query:
+            found.add("google_ads")
+        if ref.host == "connect.facebook.net" and "fbevents.js" in ref.path:
+            found.add("meta")
+        if ref.host == "analytics.tiktok.com":
+            found.add("tiktok")
+        if ref.host == "snap.licdn.com":
+            found.add("linkedin")
+        if ref.host == "bat.bing.com":
+            found.add("bing")
+    if ("googleadservices.com" in code_lower or "googleads.g.doubleclick.net" in code_lower
+            or _AW_RE.search(code)):
+        found.add("google_ads")
+    if ("connect.facebook.net" in code_lower and "fbevents.js" in code_lower) or _FBQ_INIT_RE.search(code):
+        found.add("meta")
+    if "analytics.tiktok.com" in code_lower:
+        found.add("tiktok")
+    if "snap.licdn.com" in code_lower or "_linkedin_partner_id" in code_lower:
+        found.add("linkedin")
+    if "bat.bing.com" in code_lower:
+        found.add("bing")
+    return sorted(found)
+
+
+# -- schema.org LocalBusiness / Organization --------------------------------------
+
+# LocalBusiness, its subtypes and Organization types (lowercase)
+_LOCAL_SCHEMA_TYPES = {t.lower() for t in """
+LocalBusiness Organization Corporation MedicalOrganization NGO EducationalOrganization
+SportsOrganization OnlineBusiness OnlineStore Cooperative ProfessionalService
+AnimalShelter AutomotiveBusiness AutoBodyShop AutoDealer AutoPartsStore AutoRental AutoRepair
+AutoWash GasStation MotorcycleDealer MotorcycleRepair ChildCare Dentist DryCleaningOrLaundry
+EmergencyService EmploymentAgency EntertainmentBusiness ArtGallery AmusementPark Casino ComedyClub
+MovieTheater NightClub FinancialService AccountingService BankOrCreditUnion InsuranceAgency
+FoodEstablishment Bakery BarOrPub Brewery CafeOrCoffeeShop Distillery FastFoodRestaurant
+IceCreamShop Restaurant Winery HealthAndBeautyBusiness BeautySalon DaySpa HairSalon HealthClub
+NailSalon TattooParlor HomeAndConstructionBusiness Electrician GeneralContractor HVACBusiness
+HousePainter Locksmith MovingCompany Plumber RoofingContractor LegalService Attorney Notary
+LodgingBusiness BedAndBreakfast Campground Hostel Hotel Motel Resort VacationRental MedicalBusiness
+MedicalClinic Hospital Pharmacy Physician IndividualPhysician PhysiciansOffice Physiotherapy
+Optician Optometric Dermatology DietNutrition Pediatric PlasticSurgery Podiatric PrimaryCare
+Psychiatric VeterinaryCare RealEstateAgent RecyclingCenter SelfStorage ShoppingCenter
+SportsActivityLocation BowlingAlley ExerciseGym GolfCourse SportsClub TennisComplex Store
+BikeStore BookStore ClothingStore ComputerStore ConvenienceStore DepartmentStore ElectronicsStore
+Florist FurnitureStore GardenStore GroceryStore HardwareStore HobbyShop HomeGoodsStore JewelryStore
+LiquorStore MensClothingStore MobilePhoneStore MusicStore OfficeEquipmentStore OutletStore PawnShop
+PetStore ShoeStore SportingGoodsStore TireShop ToyStore WholesaleStore TravelAgency
+TouristInformationCenter
+""".split()}
+
+
+def _schema_type_names(value) -> list[str]:
+    """"https://schema.org/Dentist" / "schema:Dentist" / ["Dentist", "Organization"] -> names."""
+    values = value if isinstance(value, list) else [value]
+    names = []
+    for item in values[:10]:
+        if isinstance(item, str):
+            for part in item.split()[:10]:
+                names.append(part.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1].lower())
+    return names
+
+
+def _has_local_schema(parser: _PageParser) -> bool:
+    for node in _jsonld_nodes(parser):
+        if any(name in _LOCAL_SCHEMA_TYPES for name in _schema_type_names(node.get("@type"))):
+            return True
+    return any(name in _LOCAL_SCHEMA_TYPES for itemtype in parser.itemtypes
+               for name in _schema_type_names(itemtype) if "schema.org" in itemtype.lower())
+
+
+# -- Links to known providers ------------------------------------------------------
+
+# First path part of a provider's own marketing pages ("calendly.com/pricing"): a link
+# there is a "powered by" / review link, not the business's booking page.
+_PROVIDER_MARKETING_PARTS = {
+    "pricing", "features", "signup", "sign-up", "login", "log-in", "signin", "sign-in", "about",
+    "about-us", "blog", "careers", "pro", "business", "for-business", "partners", "integrations",
+    "solutions", "product", "products", "resources", "support", "help", "legal", "privacy",
+    "terms", "biz", "contact", "press", "download", "app",
+}
+
+
+def _provider_page(ref: _Ref) -> bool:
+    """True when a link points to a business's own page on a provider (calendly.com/acme),
+    False for the provider's homepage or marketing pages. Scripts / iframes always count."""
+    if _is_resource(ref):
+        return True
+    on_main_host = ref.host in (ref.domain, "www." + ref.domain)
+    parts = [p for p in ref.path.split("/") if p]
+    if on_main_host and not parts and not ref.query:
+        return False  # the provider's homepage
+    if on_main_host and parts and parts[0] in _PROVIDER_MARKETING_PARTS:
+        return False
+    return True
+
+
+def _in(text: str, *words: str) -> bool:
+    return any(w in text for w in words)
+
+
+# Booking platforms: registered domain -> (name, extra check of (host, path, query) or None)
+_BOOKING_PROVIDERS: dict[str, tuple[str, object]] = {
+    "calendly.com": ("Calendly", None),
+    "acuityscheduling.com": ("Acuity Scheduling", None),
+    "as.me": ("Acuity Scheduling", None),
+    "squarespacescheduling.com": ("Acuity Scheduling", None),
+    "zocdoc.com": ("Zocdoc", None),
+    "opentable.com": ("OpenTable", lambda h, p, q: not h.startswith("restaurant.")),
+    "resy.com": ("Resy", None),
+    "exploretock.com": ("Tock", None),
+    "sevenrooms.com": ("SevenRooms", lambda h, p, q: _in(p, "reservation", "/explore/") or _is_widget_host(h)),
+    "vagaro.com": ("Vagaro", None),
+    "mindbodyonline.com": ("Mindbody", None),
+    "healcode.com": ("Mindbody", None),
+    "booksy.com": ("Booksy", None),
+    "schedulicity.com": ("Schedulicity", None),
+    "setmore.com": ("Setmore", None),
+    "simplybook.me": ("SimplyBook.me", None),
+    "simplybook.it": ("SimplyBook.me", None),
+    "fresha.com": ("Fresha", None),
+    "styleseat.com": ("StyleSeat", None),
+    "glossgenius.com": ("GlossGenius", None),
+    "joinblvd.com": ("Boulevard", None),
+    "blvd.co": ("Boulevard", None),
+    "zenoti.com": ("Zenoti", lambda h, p, q: h not in ("zenoti.com", "www.zenoti.com")),
+    "phorest.com": ("Phorest", lambda h, p, q: "/book" in p),
+    "gettimely.com": ("Timely", lambda h, p, q: h.startswith("bookings.")),
+    "booker.com": ("Booker", lambda h, p, q: h not in ("booker.com", "www.booker.com")),
+    "janeapp.com": ("Jane", lambda h, p, q: h not in ("janeapp.com", "www.janeapp.com")),
+    "clientsecure.me": ("SimplePractice", None),
+    "youcanbook.me": ("YouCanBook.me", None),
+    "oncehub.com": ("OnceHub", None),
+    "appointy.com": ("Appointy", None),
+    "10to8.com": ("10to8", None),
+    "picktime.com": ("Picktime", None),
+    "fareharbor.com": ("FareHarbor", None),
+    "checkfront.com": ("Checkfront", None),
+    "squareup.com": ("Square Appointments",
+                     lambda h, p, q: h.startswith("book.") or _in(p, "/appointments/book", "/appointments/buyer")),
+    "square.site": ("Square Appointments", lambda h, p, q: "book" in p),
+    "localmed.com": ("LocalMed", None),
+    "nexhealth.com": ("NexHealth", None),
+    "healthgrades.com": ("Healthgrades", lambda h, p, q: _in(p + "?" + q, "book", "appointment")),
+    "practo.com": ("Practo", None),
+    "oladoc.com": ("oladoc", None),
+    "marham.pk": ("Marham", None),
+    "housecallpro.com": ("Housecall Pro", lambda h, p, q: h.startswith(("book.", "online-booking."))),
+    "getjobber.com": ("Jobber", lambda h, p, q: h.startswith("clienthub.") and _in(p, "booking", "request")),
+    "servicetitan.com": ("ServiceTitan", lambda h, p, q: "scheduler" in h),
+    "hubspot.com": ("HubSpot Meetings", lambda h, p, q: h.startswith("meetings")),
+    # Vets, dental / eye care, HVAC / plumbing, auto repair, gyms, legal intake
+    "vetstoria.com": ("Vetstoria", lambda h, p, q: _app_host(h, "vetstoria.com")),
+    "petdesk.com": ("PetDesk", lambda h, p, q: _app_host(h, "petdesk.com")),
+    "getweave.com": ("Weave", lambda h, p, q: h.startswith(("book.", "schedule.", "app.book."))),
+    "scheduleengine.net": ("Schedule Engine", None),
+    "tekmetric.com": ("Tekmetric", lambda h, p, q: "appointment" in p),
+    "shopmonkey.io": ("Shopmonkey", lambda h, p, q: _in(p, "book", "appointment")),
+    "zenplanner.com": ("Zen Planner", lambda h, p, q: _app_host(h, "zenplanner.com")),
+    "pushpress.com": ("PushPress", lambda h, p, q: _app_host(h, "pushpress.com")),
+    "wodify.com": ("Wodify", lambda h, p, q: _app_host(h, "wodify.com")),
+    "glofox.com": ("Glofox", lambda h, p, q: _app_host(h, "glofox.com")),
+    "doctible.com": ("Doctible", lambda h, p, q: _app_host(h, "doctible.com")),
+    "flex.dental": ("Flex Dental", lambda h, p, q: _app_host(h, "flex.dental") or _in(p, "book", "schedule")),
+    "yapiapp.com": ("Yapi", lambda h, p, q: _app_host(h, "yapiapp.com")),
+    "modento.io": ("Modento", lambda h, p, q: _app_host(h, "modento.io")),
+    "solutionreach.com": ("Solutionreach", lambda h, p, q: _app_host(h, "solutionreach.com")),
+    "lh360.com": ("Lighthouse 360", lambda h, p, q: _app_host(h, "lh360.com")),
+    "patientpop.com": ("PatientPop", lambda h, p, q: _app_host(h, "patientpop.com")),
+    "tebra.com": ("Tebra", lambda h, p, q: _app_host(h, "tebra.com")),
+    "lawmatics.com": ("Lawmatics", lambda h, p, q: _app_host(h, "lawmatics.com")),
+    "clio.com": ("Clio Grow", lambda h, p, q: h.startswith("grow.") or "/grow/" in p),
+    "goclio.com": ("Clio Grow", lambda h, p, q: h.startswith("grow.")),
+    "google.com": ("Google Calendar", lambda h, p, q: h == "calendar.google.com" and "/appointments" in p),
+    "calendar.app.google": ("Google Calendar", None),
+}
+
+
+def _is_widget_host(host: str) -> bool:
+    return host.startswith(("widget", "widgets.", "embed."))
+
+
+# Sub-domains a provider uses for its own website, not for its customers' booking pages
+_PROVIDER_SITE_HOSTS = ("www.", "help.", "support.", "blog.", "docs.", "status.", "community.",
+                        "info.", "go.", "learn.", "academy.", "developers.", "partners.", "careers.")
+
+
+def _app_host(host: str, domain: str) -> bool:
+    """booking.vetstoria.com / acme.zenplanner.com: a sub-domain where customers book,
+    not vetstoria.com itself or its help / blog pages."""
+    return host != domain and not host.startswith(_PROVIDER_SITE_HOSTS)
+
+
+def _provider_match(ref: _Ref, providers: dict) -> str | None:
+    """Name of the provider this link / script belongs to, or None."""
+    entry = providers.get(ref.domain)
+    if entry is None and ref.host in providers:
+        entry = providers[ref.host]
+    if entry is None:
+        return None
+    name, check = entry
+    if not _provider_page(ref):
+        return None
+    if check is not None and not check(ref.host, ref.path, ref.query):
+        return None
+    return name
+
+
+# "Book now", "Book online", "Book an appointment", "Schedule online", "Request an appointment"...
+_BOOKING_TEXT_RE = re.compile(
+    r"^(?:(?:book|schedule|request|make|reserve)\s{1,3}(?:an?\s{1,3}|your\s{1,3}|my\s{1,3}|a\s{1,3}free\s{1,3})?"
+    r"(?:online|now|appointment|appt|visit|consultation|consult|session|table|today|service|exam|cleaning)"
+    r"(?:\s{1,3}(?:online|now|today))?|online\s{1,3}(?:booking|scheduling|appointments?))\s{0,2}[!.»›>]?$", re.I)
+# Words in a same-site path that show the link leads to a booking page / form
+_BOOKING_PATH_WORDS = {"book", "booking", "bookings", "book-online", "book-now", "appointment",
+                       "appointments", "appt", "schedule", "scheduling", "reserve", "reservation",
+                       "reservations", "request-appointment", "request-an-appointment",
+                       "book-an-appointment", "schedule-appointment", "online-booking"}
+_CONTENT_PATH_WORDS = {"blog", "news", "post", "posts", "article", "articles", "tag", "category"}
+
+
+def _path_words(path: str) -> set[str]:
+    """'/book-online/new' -> {'book-online', 'book', 'online', 'new'}"""
+    words: set[str] = set()
+    for part in path.split("/")[:20]:
+        if part:
+            words.add(part)
+            words.update(w for w in re.split(r"[-_.]", part[:100]) if w)
+    return words
+
+
+def _same_site(ref: _Ref, site: str) -> bool:
+    return not ref.host or (bool(site) and ref.domain == site)
+
+
+# WhatsApp links ("Book on WhatsApp", wa.me/92300...?text=I want to book an appointment):
+# how many businesses in Pakistan and India take bookings.
+_WHATSAPP_DOMAINS = {"wa.me", "whatsapp.com"}
+_WHATSAPP_BOOKING_RE = re.compile(r"\b(?:book|booking|appointments?|appt|reserve|reservations?)\b", re.I)
+
+
+def _whatsapp_booking(ref: _Ref) -> bool:
+    if ref.kind != "link" or ref.domain not in _WHATSAPP_DOMAINS:
+        return False
+    message = " ".join(parse_qs(ref.query).get("text", []))[:300]
+    return bool(_BOOKING_TEXT_RE.match(ref.text) or _WHATSAPP_BOOKING_RE.search(ref.text)
+                or _WHATSAPP_BOOKING_RE.search(message))
+
+
+def _booking(refs: list[_Ref], site: str) -> str | None:
+    """Name of the booking provider, "WhatsApp", "own form", or None."""
+    for ref in refs:
+        if ref.kind == "form":
+            continue
+        name = _provider_match(ref, _BOOKING_PROVIDERS)
+        if name:
+            return name
+    if any(_whatsapp_booking(ref) for ref in refs):
+        return "WhatsApp"
+    for ref in refs:
+        if ref.kind != "link" or not _same_site(ref, site) or not _BOOKING_TEXT_RE.match(ref.text):
+            continue
+        words = _path_words(ref.path)
+        if words & _BOOKING_PATH_WORDS and not words & _CONTENT_PATH_WORDS:
+            return "own form"
+    return None
+
+
+# -- Online payment ------------------------------------------------------------
+
+_PAY_TEXT_RE = re.compile(
+    r"^(?:pay\s{1,3}(?:online|now|here|today|(?:your|my|a)\s{1,3}(?:bill|invoice|balance|statement)|bill(?:\s{1,3}online)?|invoice)|"
+    r"make\s{1,3}(?:a\s{1,3})?payment(?:\s{1,3}online)?|online\s{1,3}(?:bill\s{1,3})?pay(?:ments?)?|"
+    r"bill\s{0,3}pay|payments?|patient\s{1,3}payments?|pay\s{1,3}(?:my\s{1,3})?bill\s{1,3}online)\s{0,2}[!.»›>]?$", re.I)
+_PAY_PATH_WORDS = {"pay", "payment", "payments", "billpay", "bill-pay", "pay-online", "pay-bill",
+                   "make-a-payment", "pay-your-bill", "online-payment", "online-payments", "paybill"}
+
+
+def _stripe(h, p, q):
+    return h.split(".")[0] in ("js", "checkout", "buy", "billing", "donate", "invoice", "pay")
+
+
+def _paypal(h, p, q):
+    return (h.startswith(("www.paypalobjects.", "paypalobjects.")) or "/sdk/js" in p
+            or _in(p, "/paypalme/", "/donate", "/cgi-bin/webscr", "/invoice/", "/ncp/payment", "/checkoutnow"))
+
+
+_PAYMENT_PROVIDERS: dict[str, tuple[str, object]] = {
+    "stripe.com": ("Stripe", _stripe),
+    "stripe.network": ("Stripe", None),
+    "paypal.com": ("PayPal", _paypal),
+    "paypalobjects.com": ("PayPal", lambda h, p, q: "/api/checkout" in p or "/en_us/i/btn" in p or "/js/external" in p),
+    "paypal.me": ("PayPal", None),
+    "square.link": ("Square", None),
+    "squareup.com": ("Square", lambda h, p, q: h.startswith(("js.", "web.")) or _in(p, "/pay-invoice", "/pay/", "/checkout")),
+    "squarecdn.com": ("Square", lambda h, p, q: h.startswith("web.") or "payments" in p),
+    "square.site": ("Square", lambda h, p, q: h.startswith("checkout.")),
+    "braintreegateway.com": ("Braintree", None),
+    "authorize.net": ("Authorize.net", lambda h, p, q: h.startswith(("js.", "jstest.", "accept.", "secure", "simplecheckout."))),
+    "clover.com": ("Clover", lambda h, p, q: h.startswith("checkout.") or p.startswith("/pay")),
+    "lawpay.com": ("LawPay", lambda h, p, q: h.startswith("secure.")),
+    # India
+    "razorpay.com": ("Razorpay", lambda h, p, q: h.split(".")[0] in ("checkout", "pages", "api", "cdn")),
+    "razorpay.me": ("Razorpay", None),
+    "rzp.io": ("Razorpay", None),
+    "instamojo.com": ("Instamojo", lambda h, p, q: h.startswith(("js.", "api.", "test.")) or p.startswith("/@")),
+    "imjo.in": ("Instamojo", None),
+    "paytm.me": ("Paytm", None),
+    "paytm.in": ("Paytm", lambda h, p, q: h.startswith(("securegw.", "securegw-stage."))),
+    "phonepe.com": ("PhonePe", lambda h, p, q: h.startswith(("mercury.", "mercury-t2.", "api."))),
+    "phon.pe": ("PhonePe", None),
+    "cashfree.com": ("Cashfree", lambda h, p, q: h.startswith(("payments.", "sdk.", "api."))),
+    "payu.in": ("PayU", lambda h, p, q: h.startswith(("secure.", "checkout.", "u.", "pmny."))
+                or p.startswith(("/pay/", "/invoice"))),
+    # Pakistan
+    "jazzcash.com.pk": ("JazzCash", lambda h, p, q: h.startswith(("payments.", "sandbox."))),
+    "easypaisa.com.pk": ("Easypaisa", lambda h, p, q: h.startswith(("easypay.", "easypaystg."))),
+}
+# Bill-pay hosts that only count from a "Pay online" / "Pay your bill" link
+_BILL_PAY_DOMAINS = {"lawpay.com", "paysimple.com", "intuit.com", "invoicecloud.com", "payjunction.com",
+                     "paymentus.com", "instamed.com", "rectanglehealth.com", "clientpay.com", "headnote.com",
+                     "xpress-pay.com", "authorize.net", "clover.com", "squareup.com", "square.link",
+                     "paypal.com", "paypal.me", "stripe.com", "patientpay.com", "phreesia.net",
+                     "payzen.com", "elavonpayments.com", "convergepay.com", "payliance.com",
+                     "razorpay.com", "razorpay.me", "rzp.io", "instamojo.com", "imjo.in", "paytm.me",
+                     "paytm.com", "phonepe.com", "cashfree.com", "payu.in", "jazzcash.com.pk",
+                     "easypaisa.com.pk"}
+
+
+def _has_payment(refs: list[_Ref], site: str) -> bool:
+    for ref in refs:
+        if _provider_match(ref, _PAYMENT_PROVIDERS):
+            return True
+    for ref in refs:
+        if ref.kind != "link" or not _PAY_TEXT_RE.match(ref.text):
+            continue
+        if ref.domain in _BILL_PAY_DOMAINS and _provider_page(ref):
+            return True
+        if _same_site(ref, site) and _path_words(ref.path) & _PAY_PATH_WORDS:
+            return True
+    return False
+
+
+# -- Shop / online ordering --------------------------------------------------------
+
+_SHOP_PATH_WORDS = {"cart", "basket", "checkout", "product", "products", "shop", "store"}
+
+
+def _has_shop(parser: _PageParser, refs: list[_Ref], code_lower: str, site: str) -> bool:
+    if parser.has_add_to_cart:
+        return True
+    resources = [r for r in refs if _is_resource(r)]
+    for ref in resources:
+        if ref.domain in ("shopify.com", "myshopify.com", "shopifycdn.com", "bigcommerce.com", "ecwid.com"):
+            if ref.domain != "shopify.com" or ref.host.startswith("cdn."):
+                return True
+    if "shopify.theme" in code_lower or "shopifybuy" in code_lower or "ecwid_product_browser" in code_lower:
+        return True
+    # WooCommerce: its files alone are not enough (the plugin may be installed and unused),
+    # it also needs links to the cart / products.
+    woo = any("/plugins/woocommerce/" in r.path for r in resources) or "woocommerce_params" in code_lower
+    if woo:
+        for ref in refs:
+            if ref.kind == "link" and _same_site(ref, site):
+                parts = {p for p in ref.path.split("/") if p}
+                if parts & _SHOP_PATH_WORDS or "add-to-cart=" in ref.query:
+                    return True
+    return False
+
+
+def _toast(h, p, q):
+    return h.startswith("order.") or "/order" in p or p.endswith("/v3") or p.startswith("/local/")
+
+
+_ORDERING_PROVIDERS: dict[str, tuple[str, object]] = {
+    "toasttab.com": ("Toast", _toast),
+    "chownow.com": ("ChowNow", lambda h, p, q: h.split(".")[0] in ("ordering", "direct", "order")
+                    or p.startswith("/order")),
+    "doordash.com": ("DoorDash", lambda h, p, q: p.startswith("/store/")),
+    "order.online": ("DoorDash", None),
+    "ubereats.com": ("Uber Eats", lambda h, p, q: "/store/" in p),
+    "grubhub.com": ("Grubhub", lambda h, p, q: p.startswith("/restaurant/")),
+    "seamless.com": ("Seamless", lambda h, p, q: p.startswith(("/menu/", "/restaurant/"))),
+    "postmates.com": ("Postmates", lambda h, p, q: p.startswith(("/store/", "/merchant/"))),
+    "slicelife.com": ("Slice", lambda h, p, q: p.startswith("/restaurants/")),
+    "menufy.com": ("Menufy", None),
+    "beyondmenu.com": ("BeyondMenu", None),
+    "spoton.com": ("SpotOn", lambda h, p, q: h.startswith("order.")),
+    "clover.com": ("Clover", lambda h, p, q: p.startswith("/online-ordering")),
+    "foodbooking.com": ("GloriaFood", None),
+    "fbgcdn.com": ("GloriaFood", None),
+    "foodpanda.pk": ("foodpanda", lambda h, p, q: "/restaurant/" in p),
+    "foodpanda.com": ("foodpanda", lambda h, p, q: "/restaurant/" in p),
+    "swiggy.com": ("Swiggy", lambda h, p, q: p.startswith(("/restaurants/", "/city/"))),
+    "zomato.com": ("Zomato", lambda h, p, q: "/order" in p),
+    "olo.com": ("Olo", lambda h, p, q: h not in ("olo.com", "www.olo.com")),
+}
+_ORDER_TEXT_RE = re.compile(
+    r"^(?:order\s{1,3}(?:online|now|here|today|pickup|pick-up|delivery|takeout|take-out|carryout|food|ahead)"
+    r"(?:\s{1,3}(?:now|here|today))?|online\s{1,3}ordering|start\s{1,3}(?:an?\s{1,3}|your\s{1,3})?order)\s{0,2}[!.»›>]?$", re.I)
+
+
+def _has_ordering(refs: list[_Ref], site: str) -> bool:
+    for ref in refs:
+        if ref.kind != "form" and _provider_match(ref, _ORDERING_PROVIDERS):
+            return True
+    for ref in refs:
+        if ref.kind != "link" or not _ORDER_TEXT_RE.match(ref.text) or not _provider_page(ref):
+            continue
+        if ref.domain in ("square.site", "squareup.com"):  # Square Online store
+            return True
+        # order.acmepizza.com: the business's own ordering site
+        if _same_site(ref, site) and ref.host.split(".")[0] in ("order", "orders", "ordering"):
+            return True
+    return False
+
+
+# -- PDF forms ------------------------------------------------------------------
+
+_PDF_FORM_RE = re.compile(
+    r"\b(?:forms?|intake|registration|register|application|paperwork|new\s{1,3}patients?|newpatient|"
+    r"questionnaire|enrollment|enrolment|consent|medical\s{1,3}history|health\s{1,3}history)\b", re.I)
+# PDFs may be stored on the site builder's file server rather than on the site itself.
+_PDF_FILE_HOSTS = {"wixstatic.com", "filesusr.com", "squarespace.com", "sqspcdn.com", "wsimg.com",
+                   "amazonaws.com", "cloudfront.net", "weebly.com", "editmysite.com", "websitepro.hosting",
+                   "hubspotusercontent.com", "hubspotusercontent-na1.net", "hubfs.net", "webflow.com",
+                   "website-files.com", "godaddysites.com", "b-cdn.net", "googleusercontent.com"}
+
+
+def _has_pdf_forms(refs: list[_Ref], site: str) -> bool:
+    for ref in refs:
+        if ref.kind != "link" or not ref.path.endswith(".pdf"):
+            continue
+        if not (_same_site(ref, site) or ref.domain in _PDF_FILE_HOSTS):
+            continue
+        file_name = unquote(ref.path.rsplit("/", 1)[-1])[:200]
+        file_words = re.sub(r"[-_.+%]", " ", file_name)
+        if _PDF_FORM_RE.search(ref.text) or _PDF_FORM_RE.search(file_words):
+            return True
+    return False
+
+
+# -- Live chat ------------------------------------------------------------------
+
+# Substrings of a chat widget's script address / loader code
+_CHAT_MARKS = (
+    "widget.intercom.io", "js.intercomcdn.com", "js.driftt.com", "embed.tawk.to", "cdn.livechatinc.com",
+    "static.zdassets.com/ekr/snippet.js", "v2.zopim.com", "js.usemessages.com", "code.tidio.co",
+    "client.crisp.chat", "static.olark.com", "connect.podium.com", "birdeye.com/embed/v6/",
+    "wchat.freshchat.com", "smartsuppchat.com", "code.jivosite.com", "call.chatra.io",
+    "xfbml.customerchat.js", "config.gorgias.chat", "salesiq.zoho", "userlike-cdn-widgets",
+    "apexchat.net", "ngageics.com", "chatserver.comm100.com", "vue.comm100.com",
+)
+
+
+def _has_live_chat(parser: _PageParser, code_lower: str) -> bool:
+    srcs = " ".join(s.lower() for s in parser.script_srcs + parser.iframe_srcs)
+    return any(mark in srcs or mark in code_lower for mark in _CHAT_MARKS)
+
+
+# -- Job titles on the careers page ---------------------------------------------
+
+# Words that make a short line a job title ("Dental Assistant", "Office Manager").
+_JOB_NOUNS = set("""
+receptionist assistant hygienist technician tech manager coordinator specialist representative rep
+associate developer engineer designer administrator admin clerk dispatcher scheduler nurse driver
+installer plumber electrician cashier server cook chef host hostess bartender barista stylist barber
+therapist accountant bookkeeper agent advisor consultant analyst director supervisor intern attorney
+paralegal secretary mechanic apprentice writer strategist executive officer operator programmer
+estimator foreman laborer helper dishwasher busser aide caregiver dentist physician optometrist
+veterinarian pharmacist groomer trainer instructor teacher tutor cleaner housekeeper janitor porter
+valet merchandiser buyer planner generalist recruiter worker lpn rn cna esthetician
+""".split())
+_JOB_PHRASES = ("front desk", "data entry", "front office")
+# Words that show a line is a sentence, not a title
+_NOT_TITLE_WORDS = {"the", "a", "an", "will", "you", "your", "we", "our", "us", "is", "are", "be", "to",
+                    "with", "who", "that", "this", "if", "please", "must", "should", "can", "help",
+                    "assist", "answer", "apply", "contact", "click", "email", "call", "send", "join",
+                    "meet", "about", "view", "see", "read", "learn", "more", "no", "not"}
+_HIRING_ROLE_RES = [
+    ("front_desk", re.compile(r"\b(?:receptionists?|front\s{1,3}(?:desk|office)|patient\s{1,3}(?:care\s{1,3})?coordinators?)\b", re.I)),
+    ("scheduling", re.compile(r"\b(?:schedulers?|scheduling|dispatchers?|dispatch)\b", re.I)),
+    ("data_entry", re.compile(r"\bdata\s{1,3}entry\b", re.I)),
+    ("customer_service", re.compile(r"\b(?:customer\s{1,3}(?:service|support|care|success)|call\s{1,3}cent(?:er|re))\b", re.I)),
+    ("office_admin", re.compile(r"\b(?:office\s{1,3}(?:manager|administrator|assistant|coordinator|admin)|"
+                                r"administrative\s{1,3}assistant|admin\s{1,3}assistant|secretary)\b", re.I)),
+    ("marketing", re.compile(r"\b(?:marketing|seo|content\s{1,3}(?:writer|creator|marketer|strategist|specialist|manager))\b", re.I)),
+    ("social_media", re.compile(r"\bsocial\s{1,3}media\b", re.I)),
+    ("web_it", re.compile(r"\b(?:web\s{1,3}(?:developer|designer)|software|developer|programmer|"
+                          r"systems?\s{1,3}administrator|network\s{1,3}(?:administrator|engineer)|help\s{0,3}desk)\b", re.I)),
+    ("sales", re.compile(r"\b(?:sales|account\s{1,3}executive|business\s{1,3}development)\b", re.I)),
+]
+_IT_RE = re.compile(r"\bIT\b")  # case-sensitive: "IT Support Specialist", not "it"
+
+
+def _looks_like_job_title(text: str) -> bool:
+    if len(text) > 100 or not text[:1].isupper() or text.endswith(("?", ":")) or ". " in text:
+        return False
+    if text.endswith(".") and not text.endswith(("Jr.", "Sr.", "Inc.")):
+        return False
+    words = re.findall(r"[A-Za-z]+", text.lower())
+    if not words or len(words) > 8 or set(words) & _NOT_TITLE_WORDS:
+        return False
+    lower = text.lower()
+    if any(phrase in lower for phrase in _JOB_PHRASES):
+        return True
+    return any(w in _JOB_NOUNS or (w.endswith("s") and w[:-1] in _JOB_NOUNS) for w in words)
+
+
+def _hiring_roles(title: str) -> set[str]:
+    roles = {role for role, role_re in _HIRING_ROLE_RES if role_re.search(title)}
+    if _IT_RE.search(title):
+        roles.add("web_it")
+    return roles
+
+
+def _job_titles_from(parser: _PageParser) -> tuple[list[str], list[str]]:
+    """(hiring_titles, hiring_roles) from a careers page: short title-like lines with a job word."""
+    titles: list[str] = []
+    seen: set[str] = set()
+    roles: set[str] = set()
+    for chunk in parser.chunks[:20_000]:
+        if chunk.in_menu:
+            continue
+        text = chunk.text.strip(" -–—|•·*:")
+        if not text or not _looks_like_job_title(text):
+            continue
+        roles |= _hiring_roles(text)
+        key = text.lower()
+        if key not in seen and len(titles) < MAX_JOB_TITLES:
+            seen.add(key)
+            titles.append(text[:JOB_TITLE_LIMIT].rstrip())
+    return titles, sorted(roles)
+
+
+# -- All intent signals of one page ------------------------------------------------
+
+def _has_viewport(parser: _PageParser, page_url: str) -> bool | None:
+    """True = built for phones. None = can't tell: the site has a separate mobile version
+    (an m. site announced with <link rel="alternate" media="...max-width...">, or we were
+    sent to it), which phones get instead of the desktop page we read."""
+    content = "".join(parser.meta.get("viewport", "").lower().split())
+    if "width=device-width" in content:
+        return True
+    if parser.has_mobile_alternate or _host_of(page_url).startswith(("m.", "mobile.")):
+        return None
+    return False
+
+
+# Signals that say "the site lacks this" when False / []. They become None ("can't tell")
+# when the page HTML can't show them (see THIN_PAGE_CHARS).
+_ABSENCE_KEYS = ("has_analytics", "ad_pixels", "has_local_schema", "has_online_booking",
+                 "has_online_payment", "has_shop", "has_online_ordering", "has_live_chat")
+# Only ever found in scripts, so unknown when a speed plugin delays the scripts...
+_DELAYED_SCRIPT_KEYS = ("has_analytics", "ad_pixels", "has_live_chat")
+# ...and often added by a Google Tag Manager container after the page loads.
+_TAG_MANAGER_KEYS = ("ad_pixels", "has_live_chat")
+
+
+def _built_by_javascript(parser: _PageParser) -> bool:
+    return parser.empty_app_mount or parser.visible_chars < THIN_PAGE_CHARS
+
+
+def _intent_signals_from(parser: _PageParser, page_url: str, careers: bool = False) -> dict:
+    """Buying-intent hints of one page (see the section comment above). Job titles are only
+    read when `careers` is True (the page is the business's careers page).
+    An absence signal is None ("can't tell") instead of False / [] when the page can't show
+    it: a page built by JavaScript, scripts delayed by a speed plugin, or Tag Manager."""
+    site = registered_domain(_host_of(page_url))
+    refs = _refs_from(parser, page_url)
+    code = _inline_code(parser)
+    code_lower = code.lower()
+    booking = _booking(refs, site)
+    has_shop = _has_shop(parser, refs, code_lower, site)
+    ordering = _has_ordering(refs, site)
+    titles, roles = _job_titles_from(parser) if careers else ([], [])
+    signals = {
+        "has_analytics": _has_analytics(refs, code_lower),
+        "has_search_console": bool(parser.meta.get("google-site-verification", "").strip()),
+        "ad_pixels": _ad_pixels(refs, code, code_lower),
+        "has_local_schema": _has_local_schema(parser),
+        "has_online_booking": booking is not None,
+        "booking_provider": booking,
+        # A shop (Shopify, WooCommerce...) and an ordering platform (Toast, ChowNow,
+        # DoorDash...) take the card payment online at their checkout.
+        "has_online_payment": has_shop or ordering or _has_payment(refs, site),
+        "has_shop": has_shop,
+        "has_online_ordering": ordering,
+        "has_pdf_forms": _has_pdf_forms(refs, site),
+        "has_live_chat": _has_live_chat(parser, code_lower),
+        "has_viewport": _has_viewport(parser, page_url),
+        "hiring_roles": roles,
+        "hiring_titles": titles,
+    }
+    # Tag Manager can load ads, chat and booking after the page opens (intent.py and the
+    # dashboard read this to say "can't tell" instead of "missing").
+    signals["has_tag_manager"] = _has_tag_manager(refs, code, code_lower)
+    unknown: set[str] = set()
+    if _built_by_javascript(parser):
+        unknown.update(_ABSENCE_KEYS)
+    if parser.scripts_delayed:
+        unknown.update(_DELAYED_SCRIPT_KEYS)
+    if signals["has_tag_manager"]:
+        unknown.update(_TAG_MANAGER_KEYS)
+    for key in unknown:
+        if not signals[key]:  # something we did find stays found
+            signals[key] = None
+    return signals
+
+
+def detect_intent_signals(html: str, page_url: str = "", careers: bool = False) -> dict:
+    """{"has_analytics", "has_search_console", "ad_pixels", "has_local_schema",
+    "has_online_booking", "booking_provider", "has_online_payment", "has_shop",
+    "has_online_ordering", "has_pdf_forms", "has_live_chat", "has_viewport",
+    "hiring_roles", "hiring_titles", "has_tag_manager"}"""
+    return _intent_signals_from(_parse(html), page_url, careers)
+
+
+# ---------------------------------------------------------------------------
 # Which pages to crawl next
 # ---------------------------------------------------------------------------
 
@@ -1808,8 +2638,8 @@ _LINK_KEYWORDS = [
     (70, ["about", "who-we-are", "uber-uns", "ueber-uns", "a-propos", "quienes-somos",
           "chi-siamo", "sobre", "over-ons", "our-story"]),
     (60, ["impressum", "imprint", "legal-notice", "mentions-legales", "aviso-legal"]),
-    # A list of branches tells us how big the business is (careers pages are not
-    # crawled: finding the link is enough).
+    # A list of branches tells us how big the business is (the careers page is not a
+    # candidate here: the crawler fetches it separately, at most once, for job titles).
     (40, ["locations", "our-locations", "offices", "our-offices", "branches"]),
     (10, ["privacy", "datenschutz"]),
 ]
@@ -1889,14 +2719,16 @@ def find_candidate_links(html: str, base_url: str) -> list[str]:
 # Everything at once
 # ---------------------------------------------------------------------------
 
-def analyze_page(html: str, page_url: str) -> PageInfo:
-    """Parse the page once and run every extractor on it."""
+def analyze_page(html: str, page_url: str, careers: bool = False) -> PageInfo:
+    """Parse the page once and run every extractor on it. `careers` = this is the
+    business's careers page (job titles are read from it)."""
     parser = _parse(html)
     return PageInfo(
         emails=_emails_from(parser, html),
         phones=_phones_from(parser),
         socials=_socials_from(parser, page_url),
         people=_people_from(parser, page_url),
-        signals={**_signals_from(parser, html), **_size_signals_from(parser, page_url)},
+        signals={**_signals_from(parser, html), **_size_signals_from(parser, page_url),
+                 **_intent_signals_from(parser, page_url, careers)},
         links=_candidate_links(parser, page_url),
     )

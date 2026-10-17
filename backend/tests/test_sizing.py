@@ -430,7 +430,7 @@ def test_export_size_columns():
              founded_year=2001, locations_count=2, ppp=PPP_14)
     headers, rows = exporting.company_table([c])
     row = dict(zip(headers, rows[0]))
-    assert [row[h] for h in headers[-8:]] == ["small", 4, "team_page", 2001, 2, "yes", 14, "2021-02-03"]
+    assert [row[h] for h in headers[-14:-6]] ==["small", 4, "team_page", 2001, 2, "yes", 14, "2021-02-03"]
     never_crawled = make(enrich_status="failed", signals={"has_careers": True, "pages_crawled": 0})
     headers, rows = exporting.company_table([never_crawled])
     row = dict(zip(headers, rows[0]))

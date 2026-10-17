@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, func, select
@@ -21,10 +21,35 @@ from ..schemas import (
 
 router = APIRouter(prefix="/api/companies", tags=["companies"])
 
-SORT_PATTERN = "^(name|score|rating|employees)$"
+SORT_PATTERN = "^(name|score|rating|employees|intent)$"
 # Size bands (app/sizing.py), plus "unknown" for companies without a size estimate.
 SizeBandFilter = Literal["solo", "small", "medium", "large", "unknown"]
 SIZE_BAND_FILTERS: tuple[str, ...] = SizeBandFilter.__args__  # type: ignore[attr-defined]
+# Buying intent (app/intent.py): the service a lead may want, or "any" = their best one.
+LookingFor = Literal["website", "seo", "software", "marketing", "any"]
+LOOKING_FOR: tuple[str, ...] = LookingFor.__args__  # type: ignore[attr-defined]
+
+
+def intent_column(looking_for: str | None):
+    """The intent score column for a service; the best service's score for None / "any"."""
+    if looking_for and looking_for != "any":
+        if looking_for not in LOOKING_FOR:  # the Google Sheets export skips FastAPI's checks
+            raise ValueError(f"looking_for must be one of {', '.join(LOOKING_FOR)}")
+        return getattr(Company, f"intent_{looking_for}")
+    return Company.intent_best_score
+
+
+# A score filter (min_score, min_intent): a whole number 0-100. Bigger numbers would crash
+# the database query ("int too large") instead of giving a clear error.
+ScoreFilter = Annotated[int | None, Query(ge=0, le=100)]
+
+
+def _check_score(name: str, value) -> None:
+    """The same check for the Google Sheets export, which calls filters() without FastAPI."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+        raise ValueError(f"{name} must be a whole number from 0 to 100")
 
 
 def _escape_like(text: str) -> str:
@@ -41,11 +66,15 @@ def filters(
     # done | failed | no_website, or "none" for companies that were never crawled
     enrich_status: str | None = None,
     lead_status: str | None = None,
-    min_score: int | None = None,
+    min_score: ScoreFilter = None,
     size_band: SizeBandFilter | None = None,  # solo|small|medium|large, or "unknown" = no estimate
+    looking_for: LookingFor | None = None,  # with min_intent: which service's intent score
+    min_intent: ScoreFilter = None,  # intent score of looking_for (best service for none / "any") >= this
 ) -> Select:
     """Shared query filters for the list and export endpoints (and the Google Sheets
     export, which calls it as a plain function: filters(job_id=4, has_email=True))."""
+    _check_score("min_score", min_score)
+    _check_score("min_intent", min_intent)
     stmt = select(Company)
     if job_id is not None:
         stmt = stmt.where(Company.id.in_(select(JobResult.company_id).where(JobResult.job_id == job_id)))
@@ -74,12 +103,19 @@ def filters(
             stmt = stmt.where(Company.size_band.is_(None))
         else:
             stmt = stmt.where(Company.size_band == size_band)
+    column = intent_column(looking_for)  # also checks looking_for
+    if min_intent is not None:
+        stmt = stmt.where(column >= min_intent)
     return stmt
 
 
-def company_order(sort: str | None) -> list:
-    """ORDER BY for 'name' (default), 'score', 'rating' or 'employees' (high to low, empty last)."""
+def company_order(sort: str | None, looking_for: str | None = None) -> list:
+    """ORDER BY for 'name' (default), 'score', 'rating', 'employees' or 'intent' (high to low,
+    empty last). 'intent' sorts by the looking_for service's score (best service when none)."""
     name = [func.lower(Company.name), Company.id]
+    if sort == "intent":
+        column = intent_column(looking_for)
+        return [column.is_(None), column.desc(), *name]
     if sort == "score":
         return [Company.score.is_(None), Company.score.desc(), *name]
     if sort == "employees":
@@ -89,8 +125,8 @@ def company_order(sort: str | None) -> list:
     return name
 
 
-def _ordered(stmt: Select, sort: str | None) -> Select:
-    return stmt.options(selectinload(Company.contacts)).order_by(*company_order(sort))
+def _ordered(stmt: Select, sort: str | None, looking_for: str | None = None) -> Select:
+    return stmt.options(selectinload(Company.contacts)).order_by(*company_order(sort, looking_for))
 
 
 def _contact_order(contact: Contact):
@@ -134,12 +170,13 @@ def _get_company(session: Session, company_id: int) -> Company:
 def list_companies(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
+    looking_for: LookingFor | None = None,  # also read by filters(); here for sort=intent
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
 ):
     total = session.scalar(select(func.count()).select_from(stmt.subquery()))
-    items = list(session.scalars(_ordered(stmt, sort).limit(limit).offset(offset)))
+    items = list(session.scalars(_ordered(stmt, sort, looking_for).limit(limit).offset(offset)))
     return CompanyPage(total=total, items=_to_out(session, items))
 
 
@@ -196,9 +233,10 @@ def find_emails(body: FindEmailsRequest, session: Session = Depends(get_session)
 def export_csv(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
+    looking_for: LookingFor | None = None,
     session: Session = Depends(get_session),
 ):
-    headers, rows = exporting.company_table(session.scalars(_ordered(stmt, sort)))
+    headers, rows = exporting.company_table(session.scalars(_ordered(stmt, sort, looking_for)))
     return exporting.csv_response(headers, rows, "leads.csv")
 
 
@@ -206,9 +244,10 @@ def export_csv(
 def export_xlsx(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
+    looking_for: LookingFor | None = None,
     session: Session = Depends(get_session),
 ):
-    headers, rows = exporting.company_table(session.scalars(_ordered(stmt, sort)))
+    headers, rows = exporting.company_table(session.scalars(_ordered(stmt, sort, looking_for)))
     return exporting.xlsx_response(headers, rows, "leads.xlsx")
 
 

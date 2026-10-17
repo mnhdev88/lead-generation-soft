@@ -37,6 +37,7 @@ second draw), so two stores of one name are two borrowers.
 """
 import argparse
 import csv
+import html
 import io
 import math
 import re
@@ -798,8 +799,8 @@ def _match(conn: sqlite3.Connection, company) -> dict | None:
     return {
         "jobs": latest["jobs"],
         "date_approved": latest["date_approved"],
-        "name": latest["name"],
-        "address": latest["address"],
+        "name": html.unescape(latest["name"] or "") or None,  # some SBA rows say "&AMP;"
+        "address": html.unescape(latest["address"] or "") or None,
         "city": latest["city"],
         "state": latest["state"],
         "zip": latest["zip5"],

@@ -11,11 +11,14 @@ import {
   sortTeam,
 } from "@/components/CompanyDrawer";
 import { ExportMenu } from "@/components/ExportMenu";
-import { LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge, SizeBadge } from "@/components/ui";
+import { IntentBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge, SizeBadge } from "@/components/ui";
 import {
   api,
+  HOT_INTENT,
   LEAD_STATUS_LABEL,
   LEAD_STATUSES,
+  OFFER_LABEL,
+  OFFERS,
   SIZE_BAND_LABEL,
   SIZE_BANDS,
   type Company,
@@ -24,11 +27,13 @@ import {
   type EnrichStatus,
   type Job,
   type LeadStatus,
+  type Offer,
   type SizeBand,
+  websiteNotRead,
 } from "@/lib/api";
 
 const PAGE_SIZE = 50;
-const COLUMNS = 11; // keep in sync with the <th> cells below (used by colSpan)
+const COLUMNS = 12; // keep in sync with the <th> cells below (used by colSpan)
 const TEAM_PREVIEW = 2; // people shown in the Team column before "Show all"
 
 // A copyright year older than this suggests the website hasn't been updated in a while.
@@ -40,6 +45,7 @@ const toBool = (t: Toggle) => (t === "any" ? undefined : t === "yes");
 type CrawlFilter = "any" | EnrichStatus | "none";
 type SizeFilter = "any" | SizeBand | "unknown";
 type SortBy = NonNullable<CompanyFilters["sort"]>;
+type LookingFor = Offer | "any";
 
 const isActive = (j: Job) => j.status === "queued" || j.status === "running";
 
@@ -96,6 +102,8 @@ export function ResultsTable({
   const [leadStatus, setLeadStatus] = useState<LeadStatus | "any">("any");
   const [size, setSize] = useState<SizeFilter>("any");
   const [minScore, setMinScore] = useState(0);
+  const [lookingFor, setLookingFor] = useState<LookingFor>("any");
+  const [hotOnly, setHotOnly] = useState(false);
   const [sort, setSort] = useState<SortBy>("name");
   const [paging, setPaging] = useState({ key: "", page: 0 });
   const [reloadKey, setReloadKey] = useState(0); // bump to re-read the table after our own changes
@@ -118,6 +126,8 @@ export function ResultsTable({
     lead_status: leadStatus === "any" ? undefined : leadStatus,
     size_band: size === "any" ? undefined : size,
     min_score: minScore || undefined,
+    looking_for: lookingFor === "any" ? undefined : lookingFor,
+    min_intent: hotOnly ? HOT_INTENT : undefined,
     sort: sort === "name" ? undefined : sort,
   };
   const filterKey = JSON.stringify(filters);
@@ -294,10 +304,34 @@ export function ResultsTable({
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-sm">
+          <span className="text-[var(--muted)]">Looking for</span>
+          <select
+            className="input w-auto py-1"
+            value={lookingFor}
+            onChange={(e) => setLookingFor(e.target.value as LookingFor)}
+            title="Which service the lead is likely to need now (used by the Intent column, Hot only and sort)"
+          >
+            <option value="any">Any</option>
+            {OFFERS.map((o) => (
+              <option key={o} value={o}>
+                {OFFER_LABEL[o]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label
+          className="flex items-center gap-1.5 text-sm"
+          title={`Only leads with an intent score of ${HOT_INTENT} or more. A lead whose website was not read yet ("?" in the Intent column) may score higher after a crawl.`}
+        >
+          <input type="checkbox" className="checkbox" checked={hotOnly} onChange={(e) => setHotOnly(e.target.checked)} />
+          <span className="text-[var(--muted)]">Hot only</span>
+        </label>
+        <label className="flex items-center gap-1.5 text-sm">
           <span className="text-[var(--muted)]">Sort</span>
           <select className="input w-auto py-1" value={sort} onChange={(e) => setSort(e.target.value as SortBy)}>
             <option value="name">Name</option>
             <option value="score">Score (high first)</option>
+            <option value="intent">Intent (high first)</option>
             <option value="rating">Rating (high first)</option>
             <option value="employees">Employees (most first)</option>
           </select>
@@ -387,7 +421,7 @@ export function ResultsTable({
 
       {/* On small screens the table scrolls sideways inside the card. */}
       <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1360px] text-sm">
+        <table className="w-full min-w-[1440px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">
@@ -405,6 +439,7 @@ export function ResultsTable({
               </th>
               <th className="px-3 py-2">Business</th>
               <th className="px-3 py-2">Score</th>
+              <th className="px-3 py-2">Intent</th>
               <th className="px-3 py-2">Size</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2">Phone</th>
@@ -443,6 +478,9 @@ export function ResultsTable({
                     </td>
                     <td className="px-3 py-2">
                       <ScoreBadge score={c.score} reasons={c.score_reasons} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <IntentCell company={c} lookingFor={lookingFor} />
                     </td>
                     <td className="px-3 py-2">
                       <SizeBadge
@@ -578,6 +616,31 @@ function BusinessCell({ company: c, onOpen }: { company: Company; onOpen: () => 
       )}
       {c.address && <div className="mt-1 truncate text-xs text-[var(--muted)]" title={c.address}>{c.address}</div>}
     </>
+  );
+}
+
+/** Intent for the offer picked in "Looking for", or the lead's best offer when that is "Any".
+ * A "?" after the score = the website was not read yet, so the score may still go up. */
+function IntentCell({ company: c, lookingFor }: { company: Company; lookingFor: LookingFor }) {
+  const intent = c.intent ?? {};
+  const unchecked = websiteNotRead(c);
+  if (lookingFor !== "any") {
+    const it = intent[lookingFor];
+    return <IntentBadge score={it?.score} reasons={it?.reasons} unchecked={unchecked} />;
+  }
+  if (!c.intent_best) {
+    // All offers at 0 = no best offer. Still show "0 ?" when the website was not read yet,
+    // so a 0 is not taken as final.
+    if (unchecked && c.intent_best_score === 0) return <IntentBadge score={0} unchecked />;
+    return <Missing />;
+  }
+  return (
+    <IntentBadge
+      score={c.intent_best_score}
+      offer={c.intent_best}
+      reasons={intent[c.intent_best]?.reasons}
+      unchecked={unchecked}
+    />
   );
 }
 
