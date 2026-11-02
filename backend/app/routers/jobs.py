@@ -1,13 +1,39 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import SearchJob
-from ..schemas import EnrichJobRequest, FindEmailsJobRequest, JobCreate, JobOut, SourceOut
+from ..schemas import EnrichJobRequest, FindEmailsJobRequest, JobBatchCreate, JobCreate, JobOut, SourceOut
 from ..sources import SOURCES
 
 router = APIRouter(prefix="/api", tags=["search"])
+
+# Most searches started in one go, so a typo in a pasted list can't use up the Google quota.
+MAX_BATCH_SEARCHES = 25
+# Jobs the dashboard reads. Room for two full batches (each search with its crawl and email check).
+JOB_LIST_LIMIT = 200
+
+
+def _check_source(name: str) -> None:
+    source = SOURCES.get(name)
+    if source is None:
+        raise HTTPException(400, f"Unknown source '{name}'")
+    reason = source.unavailable_reason()
+    if reason:
+        raise HTTPException(400, reason)
+
+
+def _unique_terms(terms: list[str]) -> list[str]:
+    """Tidy spaces and drop repeats (ignoring capitals), keeping the order."""
+    out: dict[str, str] = {}
+    for term in terms:
+        term = " ".join(term.split())
+        if term:
+            out.setdefault(term.lower(), term)
+    return list(out.values())
 
 
 @router.get("/sources", response_model=list[SourceOut])
@@ -29,12 +55,7 @@ def list_sources():
 
 @router.post("/jobs", response_model=JobOut, status_code=201)
 def create_job(body: JobCreate, session: Session = Depends(get_session)):
-    source = SOURCES.get(body.source)
-    if source is None:
-        raise HTTPException(400, f"Unknown source '{body.source}'")
-    reason = source.unavailable_reason()
-    if reason:
-        raise HTTPException(400, reason)
+    _check_source(body.source)
     # Job titles the user is looking for: "  Office Manager " -> "office manager"
     titles = []
     for t in body.titles:
@@ -56,9 +77,42 @@ def create_job(body: JobCreate, session: Session = Depends(get_session)):
     return job
 
 
+@router.post("/jobs/batch", response_model=list[JobOut], status_code=201)
+def create_job_batch(body: JobBatchCreate, session: Session = Depends(get_session)):
+    """Queue one search per combination of business type and place. They run one after another,
+    like any other jobs. A single combination is just a normal search (no batch id)."""
+    _check_source(body.source)
+    queries = _unique_terms(body.queries)
+    locations = _unique_terms(body.locations)
+    if not queries or not locations:
+        raise HTTPException(400, "Add at least one business type and one place.")
+    total = len(queries) * len(locations)
+    if total > MAX_BATCH_SEARCHES:
+        raise HTTPException(400, f"That is {total} searches. Start at most {MAX_BATCH_SEARCHES} at a time.")
+    batch_id = uuid.uuid4().hex if total > 1 else None
+    jobs = [
+        SearchJob(
+            kind="search",
+            query=query,
+            location=location,
+            source=body.source,
+            limit=body.limit,
+            enrich=body.enrich or body.find_emails,  # finding emails needs the websites crawled first
+            batch_id=batch_id,
+            params={"find_emails": body.find_emails, "titles": []},
+            progress_message="Waiting in queue...",
+        )
+        for query in queries
+        for location in locations
+    ]
+    session.add_all(jobs)
+    session.commit()
+    return jobs
+
+
 @router.get("/jobs", response_model=list[JobOut])
 def list_jobs(session: Session = Depends(get_session)):
-    return session.scalars(select(SearchJob).order_by(SearchJob.id.desc()).limit(100)).all()
+    return session.scalars(select(SearchJob).order_by(SearchJob.id.desc()).limit(JOB_LIST_LIMIT)).all()
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)

@@ -2,8 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { api, type Job, type Source, type Usage } from "@/lib/api";
+import { parseBusinessTypes, parsePlaces, placeLines } from "@/lib/searchTerms";
 
 const QUICK_CATEGORIES = ["dentist", "restaurant", "real estate", "gym", "salon", "lawyer", "hotel", "car repair"];
+// Most searches started in one go. Same as MAX_BATCH_SEARCHES in backend/app/routers/jobs.py.
+const MAX_SEARCHES = 25;
 
 // Shown if the backend can't be reached (or is an older version without /api/sources).
 const FALLBACK_SOURCES: Source[] = [
@@ -31,12 +34,14 @@ export function SearchForm({
   refreshKey,
   online,
 }: {
-  onCreated: (job: Job) => void;
+  onCreated: (jobs: Job[]) => void;
   refreshKey: number; // changes when a job finishes, so sources and usage get re-read
   online: boolean;
 }) {
-  const [query, setQuery] = useState("");
-  const [location, setLocation] = useState("");
+  const [types, setTypes] = useState<string[]>([]);
+  const [typeDraft, setTypeDraft] = useState("");
+  const [placesText, setPlacesText] = useState("");
+  const [splitNote, setSplitNote] = useState<string | null>(null); // after a paste was split into places
   const [limit, setLimit] = useState(200);
   const [enrich, setEnrich] = useState(true);
   const [findEmails, setFindEmails] = useState(false);
@@ -81,12 +86,52 @@ export function SearchForm({
   // Finding emails needs the website crawl first, so it switches the crawl on.
   const crawl = enrich || findEmails;
 
+  // What's still typed in the box counts too, so "Find leads" never drops it.
+  const queries = [...new Set([...types, ...parseBusinessTypes(typeDraft)])];
+  const locations = placeLines(placesText);
+  const searches = queries.length * locations.length;
+  const tooMany = searches > MAX_SEARCHES;
+  const googleTotal = googleRequestEstimate(limit) * Math.max(searches, 1);
+  const googleLeft = googleUsage && googleUsage.limit > 0 ? Math.max(0, googleUsage.limit - googleUsage.count) : null;
+
+  function addTypes(text: string) {
+    const typed = parseBusinessTypes(text);
+    setTypes((prev) => [...new Set([...prev, ...typed])]);
+    setTypeDraft("");
+  }
+
+  function toggleType(type: string) {
+    setTypes((prev) => (prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]));
+  }
+
+  /** A pasted list goes in as one place per line. A single place is left to paste normally. */
+  function pastePlaces(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const pasted = parsePlaces(e.clipboardData.getData("text"));
+    if (pasted.length < 2) return;
+    e.preventDefault();
+    const box = e.currentTarget;
+    const before = placesText.slice(0, box.selectionStart);
+    const after = placesText.slice(box.selectionEnd);
+    const lines = placeLines([before, ...pasted, after].join("\n"));
+    setPlacesText(lines.join("\n") + "\n"); // the cursor lands on a new line, ready for more
+    setSplitNote(`Pasted as ${pasted.length} places, one per line. If a line looks wrong, just edit it.`);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    if (searches === 0) {
+      setError("Add at least one business type and one place.");
+      return;
+    }
+    if (tooMany) return; // the message is already showing
+    setBusy(true);
     try {
-      onCreated(await api.createJob({ query, location, limit, source, enrich: crawl, find_emails: findEmails }));
+      onCreated(
+        await api.createJobBatch({ queries, locations, limit, source, enrich: crawl, find_emails: findEmails }),
+      );
+      setTypes(queries);
+      setTypeDraft("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start search");
     } finally {
@@ -99,35 +144,83 @@ export function SearchForm({
       <h2 className="text-base font-semibold">New local search</h2>
 
       <label className="block space-y-1">
-        <span className="label">Business type</span>
+        <span className="label">Business types</span>
         <input
           className="input"
-          placeholder="e.g. dentist"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          required
-          minLength={2}
+          placeholder="e.g. dentist, gym"
+          value={typeDraft}
+          onChange={(e) => {
+            // A comma finishes a type: "dentist, " becomes a chip.
+            if (/[,;]/.test(e.target.value)) addTypes(e.target.value);
+            else setTypeDraft(e.target.value);
+          }}
+          onPaste={(e) => {
+            e.preventDefault();
+            addTypes(typeDraft + "\n" + e.clipboardData.getData("text"));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && typeDraft.trim()) {
+              e.preventDefault(); // add the type instead of starting the search
+              addTypes(typeDraft);
+            }
+          }}
+          onBlur={() => addTypes(typeDraft)}
         />
       </label>
       <div className="flex flex-wrap gap-1.5">
-        {QUICK_CATEGORIES.map((c) => (
-          <button key={c} type="button" className="chip" onClick={() => setQuery(c)}>
-            {c}
-          </button>
-        ))}
+        {types
+          .filter((t) => !QUICK_CATEGORIES.includes(t))
+          .map((t) => (
+            <button
+              key={t}
+              type="button"
+              className="chip border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+              onClick={() => toggleType(t)}
+              aria-label={`Remove ${t}`}
+            >
+              {t} ✕
+            </button>
+          ))}
+        {QUICK_CATEGORIES.map((c) => {
+          const on = types.includes(c);
+          return (
+            <button
+              key={c}
+              type="button"
+              aria-pressed={on}
+              className={`chip ${on ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]" : ""}`}
+              onClick={() => toggleType(c)}
+            >
+              {on ? "✓ " : "+ "}
+              {c}
+            </button>
+          );
+        })}
       </div>
 
       <label className="block space-y-1">
-        <span className="label">Location</span>
-        <input
-          className="input"
-          placeholder="e.g. Karachi, Pakistan or Austin, Texas"
-          value={location}
-          onChange={(e) => setLocation(e.target.value)}
-          required
-          minLength={2}
+        <span className="label">Places (one per line)</span>
+        <textarea
+          className="input resize-y"
+          rows={Math.min(Math.max(3, placesText.split("\n").length), 10)} // grows with the list
+          placeholder={"Karachi, Pakistan\nAustin, Texas\nor paste a list of cities"}
+          value={placesText}
+          onChange={(e) => {
+            setPlacesText(e.target.value);
+            setSplitNote(null);
+          }}
+          onPaste={pastePlaces}
         />
       </label>
+      {splitNote && <p className="-mt-2 text-xs text-[var(--muted)]">{splitNote}</p>}
+
+      {searches > 1 && (
+        <p className={`text-xs ${tooMany ? "text-[var(--danger)]" : "text-[var(--muted)]"}`} aria-live="polite">
+          {queries.length} business type{queries.length === 1 ? "" : "s"} × {locations.length} place
+          {locations.length === 1 ? "" : "s"} = <strong>{searches} searches</strong>
+          {tooMany && `. Start at most ${MAX_SEARCHES} at a time.`}
+        </p>
+      )}
 
       <fieldset className="space-y-1.5">
         <legend className="label mb-1">Data source</legend>
@@ -171,7 +264,7 @@ export function SearchForm({
       )}
 
       <label className="block space-y-1">
-        <span className="label">Max results</span>
+        <span className="label">{searches > 1 ? "Max results per search" : "Max results"}</span>
         <input
           className="input"
           type="number"
@@ -193,6 +286,17 @@ export function SearchForm({
               Google Maps gives up to {GOOGLE_MAX_PER_SEARCH} results per area. Above {GOOGLE_MAX_PER_SEARCH} we run a{" "}
               <strong>deep search</strong> over a grid of smaller areas, which uses more API requests (up to ~{googleRequestEstimate(limit)}).
             </>
+          )}
+          {searches > 1 && (
+            <>
+              {" "}
+              All {searches} searches together: up to ~<strong>{googleTotal}</strong> requests.
+            </>
+          )}
+          {googleLeft !== null && googleTotal > googleLeft && (
+            <span className="block text-[var(--warn)]">
+              Only {googleLeft.toLocaleString()} requests are left this month, so the last searches may stop early.
+            </span>
           )}
         </p>
       )}
@@ -241,8 +345,8 @@ export function SearchForm({
 
       {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
 
-      <button className="btn-primary w-full" disabled={busy}>
-        {busy ? "Starting…" : "Find leads"}
+      <button className="btn-primary w-full" disabled={busy || tooMany}>
+        {busy ? "Starting…" : searches > 1 ? `Find leads (${searches} searches)` : "Find leads"}
       </button>
     </form>
   );

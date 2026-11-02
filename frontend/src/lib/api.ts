@@ -16,6 +16,7 @@ export type Job = {
   limit: number;
   enrich: boolean; // search jobs: crawl websites automatically when the search finishes
   parent_job_id: number | null; // enrich/emails jobs: the job whose results they work on
+  batch_id: string | null; // search jobs started together (several business types / places)
   params: {
     company_ids?: number[];
     force?: boolean;
@@ -508,6 +509,7 @@ export type SheetsStatus = { configured: boolean; service_account_email: string 
 
 export type CompanyFilters = {
   job_id?: number;
+  batch_id?: string; // results of all the searches started together
   list_id?: number;
   q?: string;
   has_website?: boolean;
@@ -547,6 +549,15 @@ export type NewJob = {
   enrich: boolean;
   find_emails?: boolean; // after crawling, guess + verify emails
   titles?: string[]; // prospect search: job titles to look for
+};
+
+export type NewJobBatch = {
+  queries: string[];
+  locations: string[];
+  limit: number; // per search
+  source: string;
+  enrich: boolean;
+  find_emails?: boolean;
 };
 
 type QueryValue = string | number | boolean | undefined;
@@ -630,6 +641,8 @@ export const api = {
   // ----- jobs -----
   listJobs: () => request<Job[]>("/api/jobs"),
   createJob: (body: NewJob) => request<Job>("/api/jobs", post(body)),
+  // One search per combination of business type and place.
+  createJobBatch: (body: NewJobBatch) => request<Job[]>("/api/jobs/batch", post(body)),
   // Crawl the websites of every result of a finished search. force = also re-crawl ones already done.
   enrichJob: (jobId: number, force = false) => request<Job>(`/api/jobs/${jobId}/enrich`, post({ force })),
   // Crawl the websites of hand-picked companies.

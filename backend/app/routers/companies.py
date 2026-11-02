@@ -60,6 +60,7 @@ def _escape_like(text: str) -> str:
 
 def filters(
     job_id: int | None = None,
+    batch_id: str | None = None,  # results of all the searches started together
     list_id: int | None = None,
     q: str | None = None,
     has_website: bool | None = None,
@@ -80,6 +81,12 @@ def filters(
     stmt = select(Company)
     if job_id is not None:
         stmt = stmt.where(Company.id.in_(select(JobResult.company_id).where(JobResult.job_id == job_id)))
+    if batch_id:
+        stmt = stmt.where(Company.id.in_(
+            select(JobResult.company_id)
+            .join(SearchJob, SearchJob.id == JobResult.job_id)
+            .where(SearchJob.batch_id == batch_id)
+        ))
     if list_id is not None:
         stmt = stmt.where(Company.id.in_(select(ListItem.company_id).where(ListItem.list_id == list_id)))
     if q and q.strip():

@@ -36,6 +36,8 @@ class SearchJob(Base):
     enrich: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
     # enrich jobs: the search job whose results are crawled (or None when params.company_ids is used)
     parent_job_id: Mapped[int | None] = mapped_column(ForeignKey("search_jobs.id"))
+    # search jobs started together (several business types / places): the same id on each
+    batch_id: Mapped[str | None] = mapped_column(String(32), index=True)
     # extra options, e.g. {"company_ids": [1, 2], "force": true, "find_emails": true,
     #                      "titles": ["owner", "manager"], "crawl": true}
     params: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))

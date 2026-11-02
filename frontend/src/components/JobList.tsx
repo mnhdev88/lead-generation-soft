@@ -22,16 +22,21 @@ const isActive = (job: Job) => job.status === "queued" || job.status === "runnin
 export function JobList({
   jobs,
   selectedId,
+  selectedBatch,
   onSelect,
+  onSelectBatch,
   onJobCreated,
 }: {
   jobs: Job[];
   selectedId: number | null;
+  selectedBatch: string | null;
   onSelect: (id: number | null) => void;
+  onSelectBatch: (batchId: string) => void;
   onJobCreated: (job: Job) => void;
 }) {
   const [busyId, setBusyId] = useState<number | null>(null); // the search whose button was just clicked
   const [actionError, setActionError] = useState<{ jobId: number; message: string } | null>(null);
+  const [openBatches, setOpenBatches] = useState<Set<string>>(new Set()); // groups showing their searches
 
   // Website-crawl and email-check jobs are shown nested under the search they belong to.
   const ids = new Set(jobs.map((j) => j.id));
@@ -41,6 +46,21 @@ export function JobList({
     if (isChild(j)) childrenOf.set(j.parent_job_id!, [...(childrenOf.get(j.parent_job_id!) ?? []), j]);
   }
   const topLevel = jobs.filter((j) => !isChild(j));
+
+  // Searches started together are shown as one group, where the newest of them would be.
+  const batchMembers = new Map<string, Job[]>();
+  for (const j of topLevel) {
+    if (j.batch_id) batchMembers.set(j.batch_id, [...(batchMembers.get(j.batch_id) ?? []), j]);
+  }
+  const shownBatches = new Set<string>();
+
+  function toggleBatch(batchId: string) {
+    setOpenBatches((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(batchId)) next.add(batchId);
+      return next;
+    });
+  }
 
   // Start a follow-up job (website crawl or email check) for a finished search.
   async function start(search: Job, create: () => Promise<Job>, failMessage: string) {
@@ -63,7 +83,7 @@ export function JobList({
     <div className="card space-y-2">
       <div className="flex items-center justify-between">
         <h2 className="text-base font-semibold">Searches</h2>
-        {selectedId !== null && (
+        {(selectedId !== null || selectedBatch !== null) && (
           <button className="text-xs text-[var(--accent)] hover:underline" onClick={() => onSelect(null)}>
             Show all leads
           </button>
@@ -81,110 +101,198 @@ export function JobList({
             );
           }
 
-          const children = childrenOf.get(job.id) ?? [];
-          const crawls = children.filter((c) => c.kind === "enrich"); // newest first
-          const emailChecks = children.filter((c) => c.kind === "emails");
-          const busyChild = children.some(isActive);
-          const lastCrawlFailed = crawls[0]?.status === "failed";
-          const canStart = job.status === "done" && job.result_count > 0 && !busyChild;
-          const selected = selectedId === job.id;
-          const starting = busyId === job.id;
+          const searchRow = (search: Job) => {
+            const children = childrenOf.get(search.id) ?? [];
+            const crawls = children.filter((c) => c.kind === "enrich"); // newest first
+            const emailChecks = children.filter((c) => c.kind === "emails");
+            const busyChild = children.some(isActive);
+            const lastCrawlFailed = crawls[0]?.status === "failed";
+            const canStart = search.status === "done" && search.result_count > 0 && !busyChild;
+            const selected = selectedId === search.id;
+            const starting = busyId === search.id;
 
-          return (
-            <li
-              key={job.id}
-              className={`overflow-hidden rounded-lg border transition-colors ${
-                selected ? "border-[var(--accent)] bg-[var(--accent-soft)]" : "border-[var(--border)]"
-              }`}
-            >
-              <button
-                onClick={() => onSelect(job.id)}
-                aria-pressed={selected}
-                className={`w-full px-3 py-2 text-left ${selected ? "" : "hover:bg-[var(--muted-bg)]"}`}
+            return (
+              <li
+                key={search.id}
+                className={`overflow-hidden rounded-lg border transition-colors ${
+                  selected ? "border-[var(--accent)] bg-[var(--accent-soft)]" : "border-[var(--border)]"
+                }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium capitalize">
-                    {job.query} · <span className="font-normal">{job.location}</span>
-                  </span>
-                  <span className={`badge shrink-0 rounded-full ${STATUS_STYLE[job.status]}`}>
-                    {job.status === "done" ? job.result_count : job.status}
-                  </span>
-                </div>
-                <p className="mt-0.5 text-[11px] text-[var(--muted)]">{SOURCE_LABEL[job.source] ?? job.source}</p>
-                {isActive(job) && job.progress_message && (
-                  <p className="mt-1 truncate text-xs text-[var(--muted)]">{job.progress_message}</p>
+                <button
+                  onClick={() => onSelect(search.id)}
+                  aria-pressed={selected}
+                  className={`w-full px-3 py-2 text-left ${selected ? "" : "hover:bg-[var(--muted-bg)]"}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium capitalize">
+                      {search.query} · <span className="font-normal">{search.location}</span>
+                    </span>
+                    <span className={`badge shrink-0 rounded-full ${STATUS_STYLE[search.status]}`}>
+                      {search.status === "done" ? search.result_count : search.status}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--muted)]">{SOURCE_LABEL[search.source] ?? search.source}</p>
+                  {isActive(search) && search.progress_message && (
+                    <p className="mt-1 truncate text-xs text-[var(--muted)]">{search.progress_message}</p>
+                  )}
+                  {search.status === "failed" && search.error && (
+                    <p className="mt-1 text-xs text-[var(--danger)]">{search.error}</p>
+                  )}
+                </button>
+
+                {children.length > 0 && (
+                  <ul className="mx-3 mb-2 space-y-1 border-l-2 border-[var(--border)] pl-2.5">
+                    {children.map((child) => (
+                      <li key={child.id}>
+                        {/* Clicking a crawl or email check shows the results of its search. */}
+                        <button
+                          onClick={() => onSelect(search.id)}
+                          className="w-full rounded-md px-1.5 py-1 text-left hover:bg-[var(--muted-bg)]"
+                          aria-label={`${KIND_TITLE[child.kind]} for ${search.query} in ${search.location}: ${child.status}. Show results.`}
+                        >
+                          <ChildJobInfo job={child} title={KIND_TITLE[child.kind]} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
-                {job.status === "failed" && job.error && <p className="mt-1 text-xs text-[var(--danger)]">{job.error}</p>}
-              </button>
 
-              {children.length > 0 && (
-                <ul className="mx-3 mb-2 space-y-1 border-l-2 border-[var(--border)] pl-2.5">
-                  {children.map((child) => (
-                    <li key={child.id}>
-                      {/* Clicking a crawl or email check shows the results of its search. */}
+                {canStart && (
+                  <div className="flex flex-wrap items-center gap-2 px-3 pb-2">
+                    {crawls.length === 0 ? (
                       <button
-                        onClick={() => onSelect(job.id)}
-                        className="w-full rounded-md px-1.5 py-1 text-left hover:bg-[var(--muted-bg)]"
-                        aria-label={`${KIND_TITLE[child.kind]} for ${job.query} in ${job.location}: ${child.status}. Show results.`}
+                        className="btn-xs"
+                        disabled={starting}
+                        onClick={() => crawl(search, false)}
+                        aria-label={`Find emails and team on the websites of ${search.query} in ${search.location}`}
                       >
-                        <ChildJobInfo job={child} title={KIND_TITLE[child.kind]} />
+                        {starting ? "Starting…" : "Find emails"}
                       </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                    ) : lastCrawlFailed ? (
+                      <button
+                        className="btn-xs"
+                        disabled={starting}
+                        onClick={() => crawl(search, false)}
+                        title="Crawl the websites that were not crawled successfully"
+                      >
+                        {starting ? "Starting…" : "Retry crawl"}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn-xs"
+                        disabled={starting}
+                        onClick={() => crawl(search, true)}
+                        title="Visit every website again, including ones already crawled"
+                      >
+                        {starting ? "Starting…" : "Re-crawl"}
+                      </button>
+                    )}
+                    {emailChecks.length === 0 && (
+                      <button
+                        className="btn-xs"
+                        disabled={starting}
+                        onClick={() => verifyEmails(search)}
+                        title="Guess the emails of the people found and check with each mail server that they exist"
+                        aria-label={`Verify emails for ${search.query} in ${search.location}`}
+                      >
+                        {starting ? "Starting…" : "Verify emails"}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {actionError?.jobId === search.id && (
+                  <p className="px-3 pb-2 text-xs text-[var(--danger)]">{actionError.message}</p>
+                )}
+              </li>
+            );
+          };
 
-              {canStart && (
-                <div className="flex flex-wrap items-center gap-2 px-3 pb-2">
-                  {crawls.length === 0 ? (
-                    <button
-                      className="btn-xs"
-                      disabled={starting}
-                      onClick={() => crawl(job, false)}
-                      aria-label={`Find emails and team on the websites of ${job.query} in ${job.location}`}
-                    >
-                      {starting ? "Starting…" : "Find emails"}
-                    </button>
-                  ) : lastCrawlFailed ? (
-                    <button
-                      className="btn-xs"
-                      disabled={starting}
-                      onClick={() => crawl(job, false)}
-                      title="Crawl the websites that were not crawled successfully"
-                    >
-                      {starting ? "Starting…" : "Retry crawl"}
-                    </button>
-                  ) : (
-                    <button
-                      className="btn-xs"
-                      disabled={starting}
-                      onClick={() => crawl(job, true)}
-                      title="Visit every website again, including ones already crawled"
-                    >
-                      {starting ? "Starting…" : "Re-crawl"}
-                    </button>
-                  )}
-                  {emailChecks.length === 0 && (
-                    <button
-                      className="btn-xs"
-                      disabled={starting}
-                      onClick={() => verifyEmails(job)}
-                      title="Guess the emails of the people found and check with each mail server that they exist"
-                      aria-label={`Verify emails for ${job.query} in ${job.location}`}
-                    >
-                      {starting ? "Starting…" : "Verify emails"}
-                    </button>
-                  )}
-                </div>
-              )}
-              {actionError?.jobId === job.id && (
-                <p className="px-3 pb-2 text-xs text-[var(--danger)]">{actionError.message}</p>
-              )}
-            </li>
+          if (!job.batch_id) return searchRow(job);
+          if (shownBatches.has(job.batch_id)) return null; // already shown in its group
+          shownBatches.add(job.batch_id);
+          const batchId = job.batch_id;
+          const members = batchMembers.get(batchId) ?? [];
+          const open = openBatches.has(batchId) || members.some((m) => m.id === selectedId);
+          return (
+            <BatchGroup
+              key={batchId}
+              members={members}
+              selected={selectedBatch === batchId}
+              open={open}
+              onSelect={() => onSelectBatch(batchId)}
+              onToggle={() => toggleBatch(batchId)}
+            >
+              {/* First started first: the order they run in. */}
+              {[...members].reverse().map(searchRow)}
+            </BatchGroup>
           );
         })}
       </ul>
     </div>
+  );
+}
+
+/** Searches started together: a summary that shows all their results, and the searches themselves. */
+function BatchGroup({
+  members,
+  selected,
+  open,
+  onSelect,
+  onToggle,
+  children,
+}: {
+  members: Job[];
+  selected: boolean;
+  open: boolean;
+  onSelect: () => void;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  // `members` is newest first: read backwards to get the order they were entered in.
+  const types = [...new Set(members.map((m) => m.query).reverse())];
+  const places = [...new Set(members.map((m) => m.location).reverse())];
+  const finished = members.filter((m) => !isActive(m)).length;
+  const failed = members.filter((m) => m.status === "failed").length;
+  const running = members.find((m) => m.status === "running");
+  const anyActive = finished < members.length;
+  // No total of businesses here: one business can be in several searches. The table shows the real count.
+  const badge = anyActive
+    ? `${finished}/${members.length} done`
+    : failed > 0
+      ? `${failed} failed`
+      : `${members.length} searches`;
+  const badgeStyle = anyActive ? "badge-accent" : failed > 0 ? "badge-danger" : "badge-success";
+
+  return (
+    <li
+      className={`overflow-hidden rounded-lg border transition-colors ${
+        selected ? "border-[var(--accent)] bg-[var(--accent-soft)]" : "border-[var(--border)]"
+      }`}
+    >
+      <button
+        onClick={onSelect}
+        aria-pressed={selected}
+        className={`w-full px-3 py-2 text-left ${selected ? "" : "hover:bg-[var(--muted-bg)]"}`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium capitalize">{types.join(", ")}</span>
+          <span className={`badge shrink-0 rounded-full ${badgeStyle}`}>{badge}</span>
+        </div>
+        <p className="truncate text-sm">{places.join(" · ")}</p>
+        <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+          {SOURCE_LABEL[members[0]?.source] ?? members[0]?.source} · all results together
+        </p>
+        {running?.progress_message && <p className="mt-1 truncate text-xs text-[var(--muted)]">{running.progress_message}</p>}
+      </button>
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        className="w-full border-t border-[var(--border)] px-3 py-1 text-left text-xs text-[var(--accent)] hover:bg-[var(--muted-bg)]"
+      >
+        {open ? "Hide" : "Show"} the {members.length} searches
+      </button>
+      {open && <ul className="space-y-1.5 border-t border-[var(--border)] p-2">{children}</ul>}
+    </li>
   );
 }
 

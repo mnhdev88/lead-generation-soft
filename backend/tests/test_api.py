@@ -77,6 +77,69 @@ def test_create_job_rejects_unknown_or_unavailable_source(client, fake_sources):
     assert r.json()["detail"] == "Add GOOGLE_PLACES_API_KEY to backend/.env"
 
 
+def test_batch_creates_one_search_per_combination(client, db, fake_sources):
+    r = client.post("/api/jobs/batch", json={
+        "queries": ["dentist", "gym"],
+        "locations": ["Karachi, Pakistan", "Austin, Texas"],
+        "source": "fake",
+        "limit": 50,
+        "find_emails": True,
+    })
+    assert r.status_code == 201
+    jobs = r.json()
+    assert [(j["query"], j["location"]) for j in jobs] == [
+        ("dentist", "Karachi, Pakistan"),
+        ("dentist", "Austin, Texas"),
+        ("gym", "Karachi, Pakistan"),
+        ("gym", "Austin, Texas"),
+    ]
+    assert len({j["batch_id"] for j in jobs}) == 1 and jobs[0]["batch_id"]
+    for j in jobs:
+        assert (j["kind"], j["status"], j["limit"], j["enrich"]) == ("search", "queued", 50, True)
+        assert j["params"]["find_emails"] is True
+
+
+def test_batch_tidies_repeats_and_one_combination_is_a_normal_search(client, db, fake_sources):
+    r = client.post("/api/jobs/batch", json={
+        "queries": [" dentist ", "Dentist"], "locations": ["Karachi", "karachi  "], "source": "fake",
+    })
+    assert r.status_code == 201
+    jobs = r.json()
+    assert [(j["query"], j["location"]) for j in jobs] == [("dentist", "Karachi")]
+    assert jobs[0]["batch_id"] is None
+
+
+def test_batch_refuses_too_many_and_bad_input(client, db, fake_sources):
+    places = [f"City {i}" for i in range(13)]
+    r = client.post("/api/jobs/batch", json={"queries": ["dentist", "gym"], "locations": places, "source": "fake"})
+    assert r.status_code == 400 and "26 searches" in r.json()["detail"]
+    assert db.query(SearchJob).count() == 0
+
+    ok = {"queries": ["dentist"], "locations": ["Karachi"], "source": "fake"}
+    assert client.post("/api/jobs/batch", json={**ok, "queries": []}).status_code == 422
+    assert client.post("/api/jobs/batch", json={**ok, "locations": ["   "]}).status_code == 400
+    assert client.post("/api/jobs/batch", json={**ok, "source": "nope"}).status_code == 400
+    assert client.post("/api/jobs/batch", json={**ok, "source": "locked"}).status_code == 400
+
+
+def test_batch_filter_shows_each_business_once_and_only_from_that_batch(client, db):
+    one = add_job(db, batch_id="aaa")
+    two = add_job(db, batch_id="aaa", query="gym")
+    other = add_job(db, batch_id="bbb")
+    shared = add_company(db, "Shared", job=one)
+    db.add(JobResult(job_id=two.id, company_id=shared.id))
+    db.commit()
+    add_company(db, "Gym Only", job=two)
+    add_company(db, "Elsewhere", job=other)
+
+    page = client.get("/api/companies", params={"batch_id": "aaa"}).json()
+    assert page["total"] == 2
+    assert sorted(c["name"] for c in page["items"]) == ["Gym Only", "Shared"]
+
+    rows = list(csv.DictReader(io.StringIO(client.get("/api/companies/export.csv", params={"batch_id": "aaa"}).text)))
+    assert len(rows) == 2
+
+
 def test_list_jobs_newest_first_and_get(client, db):
     a, b = add_job(db), add_job(db, query="plumber")
     ids = [j["id"] for j in client.get("/api/jobs").json()]

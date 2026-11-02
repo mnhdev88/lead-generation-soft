@@ -35,6 +35,20 @@ class JobCreate(BaseModel):
     titles: list[str] = Field(default=[], max_length=20)
 
 
+SearchTerm = Annotated[str, Field(min_length=2, max_length=200)]
+
+
+class JobBatchCreate(BaseModel):
+    """One search per combination of business type and place, started together."""
+
+    queries: list[SearchTerm] = Field(min_length=1, max_length=25, examples=[["dentist", "gym"]])
+    locations: list[SearchTerm] = Field(min_length=1, max_length=25, examples=[["Karachi, Pakistan", "Austin, Texas"]])
+    source: str = "osm"
+    limit: int = Field(default=200, ge=1, le=2000)  # per search
+    enrich: bool = False
+    find_emails: bool = False
+
+
 class EnrichCompaniesRequest(BaseModel):
     company_ids: list[int] = Field(min_length=1, max_length=2000)
     force: bool = False  # re-crawl even if already crawled
@@ -79,6 +93,7 @@ class JobOut(BaseModel):
     limit: int
     enrich: bool
     parent_job_id: int | None
+    batch_id: str | None = None
     params: dict = {}
     status: str
     progress_message: str | None

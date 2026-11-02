@@ -30,7 +30,11 @@ function closeCompany() {
 
 export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  // What the table shows: one search, or a group of searches started together (or everything).
+  const [selected, setSelected] = useState<{ jobId: number | null; batchId: string | null }>({
+    jobId: null,
+    batchId: null,
+  });
   const [refreshKey, setRefreshKey] = useState(0); // table: a job finished or a crawl/email check progressed
   const [jobsVersion, setJobsVersion] = useState(0); // drawer: a job finished
   const [offline, setOffline] = useState(false);
@@ -74,6 +78,18 @@ export default function Home() {
     [loadJobs],
   );
 
+  // A new search (or a group of them) from the form: show it, with its results selected.
+  const handleSearchStarted = useCallback(
+    (created: Job[]) => {
+      const ids = new Set(created.map((j) => j.id));
+      setJobs((prev) => [...[...created].reverse(), ...prev.filter((j) => !ids.has(j.id))]);
+      const batchId = created[0]?.batch_id ?? null;
+      setSelected({ jobId: batchId ? null : (created[0]?.id ?? null), batchId });
+      void loadJobs();
+    },
+    [loadJobs],
+  );
+
   const reloadTable = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const active = jobs.some(isActive);
@@ -103,16 +119,21 @@ export default function Home() {
           <SearchForm
             refreshKey={jobs.filter(isFinished).length}
             online={!offline}
-            onCreated={(job) => {
-              handleJobCreated(job);
-              setSelectedId(job.id);
-            }}
+            onCreated={handleSearchStarted}
           />
-          <JobList jobs={jobs} selectedId={selectedId} onSelect={setSelectedId} onJobCreated={handleJobCreated} />
+          <JobList
+            jobs={jobs}
+            selectedId={selected.jobId}
+            selectedBatch={selected.batchId}
+            onSelect={(jobId) => setSelected({ jobId, batchId: null })}
+            onSelectBatch={(batchId) => setSelected({ jobId: null, batchId })}
+            onJobCreated={handleJobCreated}
+          />
         </aside>
         <main className="min-w-0">
           <ResultsTable
-            jobId={selectedId}
+            jobId={selected.jobId}
+            batchId={selected.batchId}
             refreshKey={refreshKey}
             jobs={jobs}
             onJobCreated={handleJobCreated}

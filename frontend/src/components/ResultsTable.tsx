@@ -83,12 +83,14 @@ function ToggleFilter({ label, value, onChange }: { label: string; value: Toggle
 
 export function ResultsTable({
   jobId,
+  batchId,
   refreshKey,
   jobs,
   onJobCreated,
   onOpenCompany,
 }: {
   jobId: number | null;
+  batchId: string | null; // show the results of all the searches started together
   refreshKey: number; // changes when a job finishes or makes progress
   jobs: Job[];
   onJobCreated: (job: Job) => void;
@@ -118,6 +120,7 @@ export function ResultsTable({
 
   const filters: CompanyFilters = {
     job_id: jobId ?? undefined,
+    batch_id: batchId ?? undefined,
     q: q || undefined,
     has_website: toBool(website),
     has_phone: toBool(phone),
