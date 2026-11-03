@@ -286,6 +286,18 @@ def export_xlsx(
     return exporting.xlsx_response(headers, rows, "leads.xlsx")
 
 
+@router.get("/export-custom.xlsx")
+def export_custom_xlsx(
+    stmt: Select = Depends(filters),
+    sort: str = Query("name", pattern=SORT_PATTERN),
+    looking_for: LookingFor | None = None,
+    session: Session = Depends(get_session),
+):
+    """The same businesses, in the columns of our CRM import template."""
+    headers, rows = exporting.custom_company_table(session.scalars(_ordered(stmt, sort, looking_for)))
+    return exporting.xlsx_response(headers, rows, "leads-custom.xlsx")
+
+
 # Keep the "/{company_id}" routes last: they would otherwise also match "/export.csv".
 @router.get("/{company_id}", response_model=CompanyOut)
 def get_company(company_id: int, session: Session = Depends(get_session)):

@@ -43,6 +43,11 @@ export function ExportMenu({ kind, filters }: { kind: Kind; filters: CompanyFilt
       ? api.peopleExportUrl(filters as PeopleFilters, format)
       : api.exportUrl(filters as CompanyFilters, format);
 
+  const customUrl =
+    kind === "people"
+      ? api.peopleCustomExportUrl(filters as PeopleFilters)
+      : api.customExportUrl(filters as CompanyFilters);
+
   const itemCls =
     "block w-full rounded-md px-2 py-1.5 text-left hover:bg-[var(--muted-bg)] focus:bg-[var(--muted-bg)] focus:outline-none";
 
@@ -73,6 +78,10 @@ export function ExportMenu({ kind, filters }: { kind: Kind; filters: CompanyFilt
           </a>
           <a role="menuitem" href={fileUrl("xlsx")} className={itemCls} onClick={() => setOpen(false)}>
             Excel (.xlsx)
+          </a>
+          <a role="menuitem" href={customUrl} className={itemCls} onClick={() => setOpen(false)}>
+            Custom export
+            <span className="block text-xs text-[var(--muted)]">Excel in your import template&apos;s columns</span>
           </a>
           <button
             type="button"

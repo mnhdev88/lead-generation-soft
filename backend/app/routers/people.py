@@ -166,6 +166,17 @@ def export_people_xlsx(
     return exporting.xlsx_response(headers, rows, "people.xlsx")
 
 
+@router.get("/export-custom.xlsx")
+def export_people_custom_xlsx(
+    stmt: Select = Depends(people_filters),
+    sort: str = Query("seniority", pattern="^(name|score|seniority)$"),
+    session: Session = Depends(get_session),
+):
+    """The same people, in the columns of our CRM import template."""
+    headers, rows = exporting.custom_people_table(session.scalars(_ordered(stmt, sort)))
+    return exporting.xlsx_response(headers, rows, "people-custom.xlsx")
+
+
 def change_contact_status(session: Session, contact: Contact, new_status: str) -> bool:
     """Set a person's lead status, log it on the company timeline and update the score.
     Returns False when nothing changed. The caller commits."""

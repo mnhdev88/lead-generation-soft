@@ -12,6 +12,8 @@ from fastapi.responses import Response, StreamingResponse
 
 from .models import Company, Contact
 from .people import SENIORITY_RANK
+from .phones import country_code, parse_phone
+from .ppp import _google_part, us_location
 
 Cell = str | int | float | None
 
@@ -126,6 +128,149 @@ def people_table(contacts: Iterable[Contact]) -> tuple[list[str], list[list[Cell
             p.lead_status or "new", p.score,
         ])
     return list(PEOPLE_HEADERS), rows
+
+
+# --- "Custom export": the columns of our CRM import template --------------------------
+
+CUSTOM_HEADERS = [
+    "company_name", "name", "phone", "phone_2", "email", "email_2", "website_url", "social_url",
+    "whatsapp_number", "address", "city", "state", "zip_code", "country", "source", "gmb_review_rating",
+    "number_of_reviews", "gmb_url", "gmb_category", "priority", "notes",
+]
+
+# social_url holds one link: the first of these the company has.
+SOCIAL_ORDER = ("instagram", "facebook", "linkedin", "tiktok", "twitter", "youtube")
+SOURCE_LABELS = {"google": "GMB", "osm": "OpenStreetMap"}
+# Other phone fields in the source data (OpenStreetMap can hold several, split by ";").
+RAW_PHONE_KEYS = ("internationalPhoneNumber", "phone", "contact:phone", "mobile", "contact:mobile")
+PRIORITY_HIGH_SCORE = 70
+PRIORITY_NORMAL_SCORE = 40
+
+
+def _custom_phones(company: Company, person: Contact | None) -> list[str]:
+    """The person's number first, then the company's, without duplicates or impossible numbers."""
+    raw = company.raw if isinstance(company.raw, dict) else {}
+    candidates = [person.phone if person else None, company.phone]
+    for key in RAW_PHONE_KEYS:
+        candidates += re.split(r"[;,]", str(raw.get(key) or ""))
+    seen, phones = set(), []
+    for text in candidates:
+        info = parse_phone(text, company.country, company.lat, company.lon)
+        if not info or info.type == "invalid":
+            continue
+        key = info.e164 or info.display
+        if key not in seen:
+            seen.add(key)
+            phones.append(info.display)
+    return phones
+
+
+def _custom_emails(company: Company, person: Contact | None) -> list[str]:
+    """The person's email first (it belongs to `name`), then the company's. Known-bad ones are left out."""
+    statuses = company.email_statuses or {}
+    emails = [e for e in _unique_emails(company) if statuses.get(e) != "invalid"]
+    if person and person.email and person.email_status != "invalid":
+        emails = [person.email, *(e for e in emails if e.lower() != person.email.lower())]
+    return emails
+
+
+def _social_url(company: Company, person: Contact | None, person_first: bool) -> str | None:
+    socials = company.socials or {}
+    own = next((socials[k] for k in SOCIAL_ORDER if socials.get(k)), None)
+    linkedin = person.linkedin_url if person else None
+    return (linkedin or own) if person_first else (own or linkedin)
+
+
+def _whatsapp_number(company: Company) -> str | None:
+    """Only a real WhatsApp link from the website (https://wa.me/923001234567) counts."""
+    link = (company.socials or {}).get("whatsapp")
+    digits = re.sub(r"\D", "", link or "")
+    info = parse_phone(f"+{digits}") if digits else None
+    return info.display if info and info.e164 else None
+
+
+def _street_address(address: str | None, city: str | None, zip_code: str | None = None) -> str | None:
+    """The part before the city: '9835 SW 40th St, Miami, FL 33165, USA' -> '9835 SW 40th St'.
+    The full text stays when the city isn't one of its parts, so nothing gets lost; only a
+    ZIP at the end goes, as it has its own column: '1000 West Lynn St, 78703'."""
+    if not address:
+        return None
+    parts = [p.strip() for p in address.split(",")]
+    if city:
+        for i in range(len(parts) - 1, -1, -1):  # from the end: a street can be named after the city
+            if parts[i].lower() == city.strip().lower():
+                return ", ".join(parts[:i]) or None
+    if zip_code and parts[-1] == zip_code:
+        parts.pop()
+    return ", ".join(parts) or None
+
+
+def _custom_category(category: str | None) -> str | None:
+    """'fast_food' -> 'Fast food', like the template. 'Dental Clinic' stays as it is."""
+    if not category or not category.islower():
+        return category
+    return category.replace("_", " ").capitalize()
+
+
+def _state_zip_country(company: Company) -> tuple[str | None, str | None, str | None]:
+    """('TX', '78704', 'US'). These aren't columns of their own: they come from the source data."""
+    raw = company.raw if isinstance(company.raw, dict) else {}
+    us_state, us_zip = us_location(company)
+    state = (us_state or _google_part(raw, "administrative_area_level_1")
+             or raw.get("addr:state") or raw.get("addr:province"))
+    zip_code = us_zip or _google_part(raw, "postal_code") or raw.get("addr:postcode")
+    country = (country_code(company.country) or country_code(_google_part(raw, "country"))
+               or country_code(raw.get("addr:country")))
+    if not country and us_state and us_zip:
+        country = "US"  # a US state + ZIP in the address
+    return state, zip_code, country or company.country
+
+
+def _priority(score: int | None) -> str:
+    if score is None or score < PRIORITY_NORMAL_SCORE:
+        return "Low"
+    return "High" if score >= PRIORITY_HIGH_SCORE else "Normal"
+
+
+def _custom_notes(title: str | None, score: int | None, reasons: list | None, best_service: str | None) -> str | None:
+    """'Owner | Score 55: Verified email +25; Phone +10 | Best fit: website'"""
+    parts = [title] if title else []
+    if score is not None:
+        parts.append(f"Score {score}: {'; '.join(reasons)}" if reasons else f"Score {score}")
+    if best_service:
+        parts.append(f"Best fit: {best_service}")
+    return " | ".join(parts) or None
+
+
+def _custom_row(company: Company | None, person: Contact | None, lead: Company | Contact) -> list[Cell]:
+    """One template row. `lead` is the company or the person the row is about: its score sets the
+    priority and the notes. Numbers are written as text, the way the template holds them."""
+    co = company or Company()  # a person without a company still gets a row
+    phones = _custom_phones(co, person)
+    emails = _custom_emails(co, person)
+    state, zip_code, country = _state_zip_country(co)
+    return [
+        co.name, person.full_name if person else None,
+        phones[0] if phones else None, phones[1] if len(phones) > 1 else None,
+        emails[0] if emails else None, emails[1] if len(emails) > 1 else None,
+        co.domain or co.website, _social_url(co, person, person_first=lead is person), _whatsapp_number(co),
+        _street_address(co.address, co.city, zip_code), co.city, state, zip_code, country,
+        SOURCE_LABELS.get(co.source, co.source),
+        None if co.rating is None else str(co.rating),
+        None if co.reviews_count is None else str(co.reviews_count),
+        co.google_maps_url, _custom_category(co.category), _priority(lead.score),
+        _custom_notes(person.title if person else None, lead.score, lead.score_reasons, co.intent_best),
+    ]
+
+
+def custom_company_table(companies: Iterable[Company]) -> tuple[list[str], list[list[Cell]]]:
+    """One row per business; `name` is its most senior decision-maker."""
+    return list(CUSTOM_HEADERS), [_custom_row(c, best_decision_maker(c), c) for c in companies]
+
+
+def custom_people_table(contacts: Iterable[Contact]) -> tuple[list[str], list[list[Cell]]]:
+    """One row per person."""
+    return list(CUSTOM_HEADERS), [_custom_row(p.company, p, p) for p in contacts]
 
 
 # --- spreadsheet safety --------------------------------------------------------------

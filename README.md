@@ -208,6 +208,10 @@ a list only that list):
 
 - **CSV**: opens in Excel with accents intact (UTF-8).
 - **Excel (.xlsx)**.
+- **Custom export**: an Excel file with the 21 columns of our CRM import template (`company_name`,
+  `name`, `phone`, ... `priority`, `notes`). The Businesses page gives one row per business, with
+  its most senior decision-maker as `name`. The People page gives one row per person. Priority comes
+  from the score: High 70+, Normal 40-69, Low under 40 or no score.
 - **Google Sheets**: adds a new tab to a Google Sheet you choose (needs the one-time setup below).
 
 ### Google Sheets export

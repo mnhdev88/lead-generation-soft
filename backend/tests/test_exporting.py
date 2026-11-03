@@ -148,6 +148,114 @@ def test_hiring_column_survives_a_failed_recrawl():
     assert row_dict(headers, rows[0])["https"] == ""  # SSL etc. still need the latest crawl to be good
 
 
+TEMPLATE_HEADERS = [
+    "company_name", "name", "phone", "phone_2", "email", "email_2", "website_url", "social_url",
+    "whatsapp_number", "address", "city", "state", "zip_code", "country", "source", "gmb_review_rating",
+    "number_of_reviews", "gmb_url", "gmb_category", "priority", "notes",
+]
+
+
+def test_custom_export_fills_the_template_from_a_google_business():
+    owner = Contact(id=1, full_name="Ali Khan", title="Owner", seniority="owner", is_decision_maker=True,
+                    email="ali@acme.example", email_status="valid", phone="+1 512-555-0199")
+    c = make_company(
+        source="google", domain="acme.example", phone="+1 786-560-7567", country="United States", city="Miami",
+        address="9835 SW 40th St, Miami, FL 33165, USA", email="info@acme.example", rating=4.5, reviews_count=120,
+        google_maps_url="https://maps.google.com/?cid=1", category="Dentist", score=75,
+        score_reasons=["Verified email +25"], intent_best="website",
+        socials={"facebook": "https://fb.com/acme", "instagram": "https://instagram.com/acme",
+                 "whatsapp": "https://wa.me/923001234567"},
+        raw={"internationalPhoneNumber": "+1 786-560-7567",
+             "addressComponents": [{"shortText": "FL", "types": ["administrative_area_level_1"]},
+                                   {"shortText": "33165", "types": ["postal_code"]},
+                                   {"shortText": "US", "types": ["country"]}]},
+        contacts=[owner],
+    )
+    headers, rows = exporting.custom_company_table([c])
+    assert headers == TEMPLATE_HEADERS
+    assert row_dict(headers, rows[0]) == {
+        "company_name": "Acme Dental", "name": "Ali Khan",
+        "phone": "+1 512-555-0199", "phone_2": "+1 786-560-7567",
+        "email": "ali@acme.example", "email_2": "info@acme.example",
+        "website_url": "acme.example", "social_url": "https://instagram.com/acme",
+        "whatsapp_number": "+92 300 1234567",
+        "address": "9835 SW 40th St", "city": "Miami", "state": "FL", "zip_code": "33165", "country": "US",
+        "source": "GMB", "gmb_review_rating": "4.5", "number_of_reviews": "120",
+        "gmb_url": "https://maps.google.com/?cid=1", "gmb_category": "Dentist", "priority": "High",
+        "notes": "Owner | Score 75: Verified email +25 | Best fit: website",
+    }
+
+
+def test_custom_export_of_an_osm_business_with_little_data():
+    c = make_company(website=None, phone="0300 1234567", country="PK", city="Karachi",
+                     address="Rojhan Street, Clifton, Karachi",
+                     raw={"phone": "0300 1234567; 021 35821955", "addr:postcode": "75600", "addr:province": "Sindh"})
+    headers, rows = exporting.custom_company_table([c])
+    row = row_dict(headers, rows[0])
+    assert row["source"] == "OpenStreetMap" and row["name"] is None and row["website_url"] is None
+    assert (row["phone"], row["phone_2"]) == ("+92 300 1234567", "+92 21 35821955")
+    assert (row["address"], row["state"], row["zip_code"], row["country"]) == (
+        "Rojhan Street, Clifton", "Sindh", "75600", "PK")
+    assert row["gmb_review_rating"] is None and row["number_of_reviews"] is None
+    assert row["priority"] == "Low" and row["notes"] is None
+
+
+def test_custom_export_leaves_out_known_bad_contact_details():
+    c = make_company(phone="123", phone_type="invalid", email="bad@acme.example", emails=["good@acme.example"],
+                     email_statuses={"bad@acme.example": "invalid"}, country="US",
+                     socials={"whatsapp": "https://wa.me/1"})
+    headers, rows = exporting.custom_company_table([c])
+    row = row_dict(headers, rows[0])
+    assert row["phone"] is None and row["whatsapp_number"] is None
+    assert (row["email"], row["email_2"]) == ("good@acme.example", None)
+
+
+def test_custom_export_people_rows():
+    co = make_company(phone="+1 786-560-7567", country="US", socials={"instagram": "https://instagram.com/acme"})
+    p = Contact(full_name="Ali", title="Owner", linkedin_url="https://linkedin.com/in/ali", lead_status="new",
+                score=40, score_reasons=[], email="ali@acme.example", email_status="unknown", company=co)
+    headers, rows = exporting.custom_people_table([p, Contact(full_name="No Company")])
+    row = row_dict(headers, rows[0])
+    assert row["company_name"] == "Acme Dental" and row["name"] == "Ali" and row["email"] == "ali@acme.example"
+    assert row["social_url"] == "https://linkedin.com/in/ali"
+    assert row["priority"] == "Normal" and row["notes"] == "Owner | Score 40"
+    other = row_dict(headers, rows[1])
+    assert other["company_name"] is None and other["name"] == "No Company" and other["priority"] == "Low"
+
+
+def test_custom_street_address_keeps_the_text_without_a_matching_city():
+    assert exporting._street_address("Plot 5 Clifton Karachi", "Karachi") == "Plot 5 Clifton Karachi"
+    assert exporting._street_address("Austin, Austin, TX", "Austin") == "Austin"
+    assert exporting._street_address("Miami, FL", "Miami") is None
+    assert exporting._street_address("1 Main St", None) == "1 Main St"
+    assert exporting._street_address("1000 West Lynn St, 78703", None, "78703") == "1000 West Lynn St"
+    assert exporting._street_address("78741", None, "78741") is None
+    assert exporting._street_address(None, "Austin") is None
+
+
+def test_custom_category_matches_the_template_style():
+    assert exporting._custom_category("restaurant") == "Restaurant"
+    assert exporting._custom_category("fast_food") == "Fast food"
+    assert exporting._custom_category("Dental Clinic") == "Dental Clinic"
+    assert exporting._custom_category(None) is None
+
+
+def test_custom_export_downloads_via_api(client, db):
+    co = Company(name="=Evil Co", source="osm", source_ref="e", phone="+92 300 1234567", city="Karachi", score=80)
+    co.contacts.append(Contact(full_name="Ali", title="Owner", seniority="owner", is_decision_maker=True))
+    db.add(co)
+    db.commit()
+    for url, filename in (("/api/companies/export-custom.xlsx", "leads-custom.xlsx"),
+                          ("/api/people/export-custom.xlsx", "people-custom.xlsx")):
+        r = client.get(url)
+        assert r.status_code == 200 and f'filename="{filename}"' in r.headers["content-disposition"]
+        ws = load_workbook(io.BytesIO(r.content)).active
+        assert ws.title == "Leads"
+        rows = list(ws.iter_rows(values_only=True))
+        assert list(rows[0]) == TEMPLATE_HEADERS and len(rows) == 2
+        assert rows[1][0] == "'=Evil Co" and rows[1][1] == "Ali"  # no formula can run in Excel
+
+
 def test_intent_columns_at_the_end():
     c = make_company(intent_best="website", intent_website=45, intent_seo=10, intent_software=0,
                      intent_marketing=5, intent={"website": {"score": 45, "reasons": ["No SSL (http only) +15",

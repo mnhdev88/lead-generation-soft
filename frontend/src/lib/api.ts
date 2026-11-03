@@ -673,6 +673,8 @@ export const api = {
     request<Activity>(`/api/companies/${companyId}/notes`, post({ text, contact_id: contactId ?? null })),
   exportUrl: (filters: CompanyFilters, format: "csv" | "xlsx" = "csv") =>
     `${API_URL}/api/companies/export.${format}?${filtersToQuery(filters)}`,
+  customExportUrl: (filters: CompanyFilters) =>
+    `${API_URL}/api/companies/export-custom.xlsx?${filtersToQuery(filters)}`,
 
   // ----- people (Step 5) -----
   listPeople: (filters: PeopleFilters, limit: number, offset: number) =>
@@ -680,6 +682,8 @@ export const api = {
   updatePerson: (id: number, body: { lead_status?: LeadStatus }) => request<Person>(`/api/people/${id}`, patch(body)),
   peopleExportUrl: (filters: PeopleFilters, format: "csv" | "xlsx" = "csv") =>
     `${API_URL}/api/people/export.${format}?${filtersToQuery(filters)}`,
+  peopleCustomExportUrl: (filters: PeopleFilters) =>
+    `${API_URL}/api/people/export-custom.xlsx?${filtersToQuery(filters)}`,
 
   // Set the status of many companies and/or people at once.
   bulkStatus: (body: { company_ids?: number[]; contact_ids?: number[]; lead_status: LeadStatus }) =>
