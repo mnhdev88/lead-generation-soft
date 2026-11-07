@@ -187,6 +187,9 @@ class Contact(Base):
     linkedin_url: Mapped[str | None] = mapped_column(String(300))
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500))  # page where this person was found
+    # Every source that found this person: ["website", "linkedin_search", "registry"...].
+    # Two or more independent ones = confirmed (app/scoring.py).
+    confirmed_by: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     lead_status: Mapped[str] = mapped_column(String(20), default="new", server_default=text("'new'"))
     score: Mapped[int | None] = mapped_column(Integer)  # 0-100
     score_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))

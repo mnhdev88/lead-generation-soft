@@ -75,6 +75,9 @@ class FindPeopleRequest(BaseModel):
     use_apollo: bool = True  # use Apollo.io when the web search finds no one (costs Apollo credits)
     find_emails: bool = True  # afterwards queue an email check for the companies with new people
     force: bool = False  # look up again businesses already looked up recently (PEOPLE_RECHECK_DAYS)
+    # Also look up businesses that already have a decision-maker, to confirm them with a
+    # second source (one web search each, plus the business register when set up).
+    confirm: bool = False
 
 
 class FindEmailsJobRequest(BaseModel):
@@ -135,12 +138,13 @@ class ContactOut(BaseModel):
     linkedin_url: str | None
     source: str | None
     source_url: str | None
+    confirmed_by: list[str] = []  # every source that found this person (2+ = confirmed)
     lead_status: str = "new"
     score: int | None = None
     score_reasons: list[str] = []
     do_not_contact: str | None = None  # why this person is on the do-not-contact list (router fills it)
 
-    @field_validator("score_reasons", mode="before")
+    @field_validator("score_reasons", "confirmed_by", mode="before")
     @classmethod
     def _none_to_list(cls, v):
         return v or []

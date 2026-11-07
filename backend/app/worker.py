@@ -39,7 +39,7 @@ from .intent import apply_intent
 from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from .people import classify, linkedin
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
-from .providers import apollo, hunter, websearch
+from .providers import apollo, hunter, registry, websearch
 from .providers.hunter import HunterError
 from .blocklist import company_blocked
 from .scoring import recompute_scores, rescore
@@ -400,6 +400,23 @@ def _split_name(full_name: str) -> tuple[str | None, str | None]:
     return parts[0], (" ".join(parts[1:]) or None)
 
 
+def _confirm(contact: Contact, source: str) -> None:
+    """Remember that `source` found this person too (two or more = confirmed)."""
+    seen = list(contact.confirmed_by or [])
+    if contact.source and contact.source not in seen:
+        seen.insert(0, contact.source)
+    if source not in seen:
+        seen.append(source)
+    contact.confirmed_by = seen  # a new list, so the JSON column is saved
+
+
+def _same_name(a: str | None, b: str | None) -> bool:
+    """'John A. Smith' and 'John Smith' are the same person (first and last name agree)."""
+    wa = [w.strip(".,").lower() for w in (a or "").split()]
+    wb = [w.strip(".,").lower() for w in (b or "").split()]
+    return len(wa) >= 2 and len(wb) >= 2 and wa[0] == wb[0] and wa[-1] == wb[-1]
+
+
 def _find_contact(company: Company, name: str | None, email: str | None) -> Contact | None:
     """An existing contact with the same email or the same full name (case-insensitive)."""
     for c in company.contacts:
@@ -432,6 +449,7 @@ def _save_people(session, company: Company, people, matched: list[Contact] | Non
         if email and not match.email:
             match.email = email
             match.email_source = "website"
+        _confirm(match, "website")
         apply_contact_phone(match, company)
         _classify_contact(match)
         if matched is not None:
@@ -697,6 +715,7 @@ def _save_hunter_people(company: Company, people) -> int:
         for name_, value in (("title", p.position), ("linkedin_url", p.linkedin_url)):
             if value and not getattr(contact, name_):
                 setattr(contact, name_, value)
+        _confirm(contact, "hunter")
         if not contact.email:
             contact.email = email
             contact.email_source = "hunter"
@@ -957,12 +976,14 @@ def _same_linkedin(a: str | None, b: str | None) -> bool:
 
 
 def _find_person(company: Company, name: str | None, email: str | None, linkedin_url: str | None) -> Contact | None:
-    """An existing contact with the same LinkedIn profile, else the same email or full name."""
+    """An existing contact with the same LinkedIn profile, else the same email or full name,
+    else the same first and last name ("John A. Smith" = "John Smith")."""
     if linkedin_url:
         for c in company.contacts:
             if _same_linkedin(c.linkedin_url, linkedin_url):
                 return c
-    return _find_contact(company, name, email)
+    return _find_contact(company, name, email) or next(
+        (c for c in company.contacts if _same_name(c.full_name, name)), None)
 
 
 def _apollo_email_status(status: str | None) -> str | None:
@@ -998,6 +1019,7 @@ def _save_found_person(company: Company, *, name: str, title: str | None, linked
         contact.email_source = "apollo"
         contact.email_status = _apollo_email_status(email_status)
         contact.email_confidence = APOLLO_VERIFIED_CONFIDENCE if contact.email_status == "valid" else None
+    _confirm(contact, source)
     _classify_contact(contact)
     return contact, created
 
@@ -1027,12 +1049,14 @@ def run_people_job(session, job: SearchJob) -> None:
     params = job.params or {}
     use_apollo = params.get("use_apollo", True) is not False
     force = params.get("force") is True
+    confirm = params.get("confirm") is True  # also look up businesses that have a decision-maker
     web_ok = websearch.available()
     apollo_ok = use_apollo and apollo.available()
-    if not web_ok and not apollo_ok:
+    registry_ok = registry.available()
+    if not web_ok and not apollo_ok and not registry_ok:
         raise SourceError(
-            "Finding owners needs a web search key (BRAVE_API_KEY or SERPER_API_KEY) or an "
-            "APOLLO_API_KEY in backend/.env. Add one and restart the backend."
+            "Finding owners needs a web search key (BRAVE_API_KEY or SERPER_API_KEY), an "
+            "APOLLO_API_KEY or an OPENCORPORATES_API_TOKEN in backend/.env. Add one and restart the backend."
         )
     companies = _job_targets(session, job)
     job.total = len(companies)
@@ -1040,8 +1064,8 @@ def run_people_job(session, job: SearchJob) -> None:
     job.result_count = 0
     session.commit()
 
-    stats = {"skipped": 0, "linkedin": 0, "apollo": 0, "pages": 0, "searches": 0, "search_errors": 0,
-             "failed": 0}
+    stats = {"skipped": 0, "linkedin": 0, "apollo": 0, "registry": 0, "pages": 0, "searches": 0,
+             "search_errors": 0, "failed": 0}
     found_ids: list[int] = []  # companies where a decision-maker was found
     email_ids: list[int] = []  # companies with people added or updated: their emails are checked next
     notes: list[str] = []  # why a service was stopped during the job
@@ -1049,13 +1073,13 @@ def run_people_job(session, job: SearchJob) -> None:
     stopped_after = None  # companies done when every service had stopped
 
     for i, company in enumerate(companies, start=1):
-        if not web_ok and not apollo_ok:
+        if not web_ok and not apollo_ok and not registry_ok:
             stopped_after = i - 1
             break
         job.progress_message = _short(f"Looking up owners: {i} of {len(companies)}...")
         session.commit()
         try:
-            if _has_decision_maker(company) or (not force and _looked_up_recently(company)):
+            if (_has_decision_maker(company) and not confirm) or (not force and _looked_up_recently(company)):
                 stats["skipped"] += 1
             else:
                 touched = False
@@ -1106,6 +1130,21 @@ def run_people_job(session, job: SearchJob) -> None:
                     except SourceError as e:
                         apollo_ok = False
                         notes.append(f"Apollo.io stopped: {e}")
+                # 3. The official business register (when set up): an independent source.
+                if registry_ok:
+                    try:
+                        for o in registry.find_officers(company):
+                            _save_found_person(company, name=o.full_name, title=o.position, linkedin_url=None,
+                                               source_url=o.source_url, source="registry")
+                            stats["registry"] += 1
+                            touched = True
+                        looked_up = True
+                    except UsageLimitError:
+                        registry_ok = False
+                        notes.append("Business register monthly limit reached")
+                    except SourceError as e:
+                        registry_ok = False
+                        notes.append(f"Business register stopped: {e}")
                 if looked_up:
                     company.people_searched_at = _now()
                 if touched:
@@ -1130,6 +1169,8 @@ def run_people_job(session, job: SearchJob) -> None:
     extras = []
     if stats["skipped"]:
         extras.append(f"{stats['skipped']} already had one, skipped")
+    if stats["registry"]:
+        extras.append(f"{stats['registry']} people from business registers")
     if stats["pages"]:
         extras.append(f"{stats['pages']} LinkedIn company pages saved")
     if stats["search_errors"]:

@@ -9,7 +9,7 @@ from ..db import get_session
 from ..emails.hosting import FREE, email_domain, mail_provider
 from ..models import Activity, Company, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from ..people import SENIORITY_RANK
-from ..providers import apollo, websearch
+from ..providers import apollo, registry, websearch
 from ..utils import own_domain
 from ..schemas import (
     ActivityOut,
@@ -282,11 +282,11 @@ def find_emails(body: FindEmailsRequest, session: Session = Depends(get_session)
 def find_people(body: FindPeopleRequest, session: Session = Depends(get_session)):
     """Queue a "Find owner" job for hand-picked companies: LinkedIn profiles via a web search,
     Apollo.io as a backup (use_apollo), then an email check of the people found (find_emails)."""
-    if not websearch.available() and not (body.use_apollo and apollo.available()):
+    if not websearch.available() and not (body.use_apollo and apollo.available()) and not registry.available():
         raise HTTPException(
             400,
-            "Finding owners needs a web search key (BRAVE_API_KEY or SERPER_API_KEY) or an "
-            "APOLLO_API_KEY in backend/.env. Add one and restart the backend.",
+            "Finding owners needs a web search key (BRAVE_API_KEY or SERPER_API_KEY), an "
+            "APOLLO_API_KEY or an OPENCORPORATES_API_TOKEN in backend/.env. Add one and restart the backend.",
         )
     found = _selected_ids(session, body.company_ids)
     job = SearchJob(
@@ -296,7 +296,7 @@ def find_people(body: FindPeopleRequest, session: Session = Depends(get_session)
         source="people",
         limit=len(found),
         params={"company_ids": found, "use_apollo": body.use_apollo, "find_emails": body.find_emails,
-                "force": body.force},
+                "force": body.force, "confirm": body.confirm},
         progress_message="Waiting in queue...",
     )
     session.add(job)

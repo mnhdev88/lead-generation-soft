@@ -76,7 +76,34 @@ const EMAIL_SOURCE_LABEL: Record<string, string> = {
 const CONTACT_SOURCE_LABEL: Record<string, string> = {
   linkedin_search: "via LinkedIn search",
   apollo: "via Apollo",
+  registry: "in the official business register",
 };
+
+/** Short names of the sources that can find a person. */
+const SOURCE_NAME: Record<string, string> = {
+  website: "website",
+  linkedin_search: "LinkedIn",
+  apollo: "Apollo",
+  hunter: "Hunter",
+  registry: "business register",
+};
+
+/** Every source that found this person (people saved earlier: just their source). */
+function sourcesOf(p: Contact): string[] {
+  const all = [...(p.confirmed_by ?? [])];
+  if (p.source && !all.includes(p.source)) all.unshift(p.source);
+  return all;
+}
+
+/** Owners named by different sources who aren't the same person: worth checking by hand. */
+function ownerConflict(contacts: Contact[]): string | null {
+  const owners = contacts.filter((p) => p.seniority === "owner" && p.full_name);
+  const names = new Set(owners.map((p) => p.full_name!.toLowerCase()));
+  if (names.size < 2) return null;
+  const bySource = owners.map((p) => `${p.full_name} (${sourcesOf(p).map((s) => SOURCE_NAME[s] ?? s).join(", ")})`);
+  const sources = new Set(owners.flatMap(sourcesOf));
+  return sources.size >= 2 ? bySource.join("; ") : null;
+}
 
 /** An email address with its verification badge. Invalid addresses are struck through. */
 export function EmailLine({ email, status }: { email: string; status: EmailStatus | null }) {
@@ -236,7 +263,8 @@ export function CompanyDrawer({
         kind === "people"
           ? await api.findDecisionMakers(companyId)
           : kind === "owner"
-            ? await api.findPeople([companyId]) // then finds their emails too
+            ? // then finds their emails too; with a decision-maker already, a second source confirms them
+              await api.findPeople([companyId], { confirm: hasDecisionMaker })
             : await api.findEmails([companyId], { force: true }); // re-check even recently checked emails
       setStartedJobId(job.id);
       onJobCreated(job);
@@ -300,6 +328,7 @@ export function CompanyDrawer({
     qualityAction(() => api.reportBounced(email), "Could not mark the email as bounced");
 
   const canFindPeople = Boolean(company?.website || company?.domain);
+  const hasDecisionMaker = Boolean(company?.contacts.some((p) => p.is_decision_maker));
   const canVerify = Boolean(company && (company.website || company.domain || company.emails.length > 0));
 
   return (
@@ -365,7 +394,11 @@ export function CompanyDrawer({
                 onClick={() => startJob("owner")}
                 title="Look for the owner in web search results that point to LinkedIn profiles (and in Apollo.io if it is set up), then find their email. We never open LinkedIn pages ourselves."
               >
-                {busy === "owner" ? "Starting…" : "Find owner (LinkedIn search / Apollo)"}
+                {busy === "owner"
+                  ? "Starting…"
+                  : hasDecisionMaker
+                    ? "Confirm owner (second source)"
+                    : "Find owner (LinkedIn search / Apollo)"}
               </button>
               <button
                 className="btn-secondary text-xs"
@@ -720,6 +753,11 @@ function PeopleSection({
   const team = sortTeam(contacts);
   return (
     <Section title="People" count={team.length}>
+      {ownerConflict(team) && (
+        <p role="note" className="rounded-lg bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]">
+          The sources name different owners: {ownerConflict(team)}. Check who is right before you write.
+        </p>
+      )}
       {team.length === 0 ? (
         <p className="text-sm text-[var(--muted)]">
           No people found yet. “Find decision-makers” looks for owners and managers on the website; “Find owner”
@@ -733,6 +771,11 @@ function PeopleSection({
                 {p.is_decision_maker && <DecisionMakerStar />}
                 <span className="font-medium">{p.full_name ?? "Unknown name"}</span>
                 <SeniorityBadge seniority={p.seniority} />
+                {sourcesOf(p).length >= 2 && (
+                  <span className="badge badge-success" title="Found by more than one independent source">
+                    Confirmed: {sourcesOf(p).map((s) => SOURCE_NAME[s] ?? s).join(" + ")}
+                  </span>
+                )}
                 {p.department && <span className="badge badge-muted capitalize">{p.department}</span>}
               </div>
               {p.title && <div className="text-xs text-[var(--muted)]">{p.title}</div>}

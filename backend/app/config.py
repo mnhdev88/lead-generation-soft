@@ -87,6 +87,10 @@ WEB_SEARCH_MONTHLY_LIMIT = int(os.getenv("WEB_SEARCH_MONTHLY_LIMIT", "900"))
 # Searching Apollo's people is free; revealing one person's email costs 1 credit.
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "").strip()
 APOLLO_MONTHLY_LIMIT = int(os.getenv("APOLLO_MONTHLY_LIMIT", "50"))  # credits per month
+# Optional: official business registers via OpenCorporates (app/providers/registry.py), to
+# confirm who owns a business. Two requests per business.
+OPENCORPORATES_API_TOKEN = os.getenv("OPENCORPORATES_API_TOKEN", "").strip()
+OPENCORPORATES_MONTHLY_LIMIT = int(os.getenv("OPENCORPORATES_MONTHLY_LIMIT", "200"))
 # "Find owner" skips a business looked up less than this many days ago (saves searches/credits).
 PEOPLE_RECHECK_DAYS = int(os.getenv("PEOPLE_RECHECK_DAYS", "90"))
 # 1 = also spend a second web search per business on its LinkedIn company page. Off by default:

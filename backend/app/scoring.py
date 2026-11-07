@@ -22,6 +22,7 @@ Person score
     Decision-maker +30
     Seniority: owner or C-level +15, director +10, manager +5
     Phone +5 (not for a number that can't exist), LinkedIn +5
+    Confirmed by 2+ independent sources (website, LinkedIn search, business register...) +10
     Plus a tenth of the company score (company 70 -> +7)
     Status Lost / Not interested -> score 0
 
@@ -81,6 +82,9 @@ CONTACT_DECISION_MAKER = 30
 CONTACT_SENIORITY_POINTS = {"owner": 15, "c_level": 15, "director": 10, "manager": 5}
 CONTACT_PHONE = 5
 CONTACT_LINKEDIN = 5
+CONTACT_CONFIRMED = 10
+SOURCE_LABELS = {"website": "website", "linkedin_search": "LinkedIn", "apollo": "Apollo", "hunter": "Hunter",
+                 "registry": "business register"}
 
 # Statuses that mean "don't bother": the score drops to 0.
 DEAD_STATUSES = {"lost": "Lost", "not_interested": "Not interested"}
@@ -272,12 +276,24 @@ def score_contact(contact: Contact, company: Company | None = None) -> tuple[int
         points.append(("Phone", CONTACT_PHONE))
     if contact.linkedin_url:
         points.append(("LinkedIn", CONTACT_LINKEDIN))
+    sources = person_sources(contact)
+    if len(sources) >= 2:
+        names = " + ".join(SOURCE_LABELS.get(s, s) for s in sources)
+        points.append((f"Confirmed by {len(sources)} sources ({names})", CONTACT_CONFIRMED))
     if company is not None and company.score:
         bonus = round(company.score / 10)
         if bonus:
             points.append((f"Company score {company.score}", bonus))
 
     return _finish(points, contact.lead_status)
+
+
+def person_sources(contact: Contact) -> list[str]:
+    """The sources that found this person (people saved before confirmed_by existed: their source)."""
+    sources = list(contact.confirmed_by or [])
+    if contact.source and contact.source not in sources:
+        sources.insert(0, contact.source)
+    return sources
 
 
 def rescore(company: Company, branches: int | None = None) -> None:

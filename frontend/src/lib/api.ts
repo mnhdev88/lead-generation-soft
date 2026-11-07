@@ -79,8 +79,9 @@ export type Contact = {
   phone: string | null;
   phone_type: PhoneType | null;
   linkedin_url: string | null;
-  source: string | null; // website | hunter | linkedin_search | apollo
+  source: string | null; // website | hunter | linkedin_search | apollo | registry
   source_url: string | null;
+  confirmed_by?: string[]; // every source that found this person (2+ = confirmed)
   lead_status: LeadStatus;
   score: number | null;
   score_reasons: string[];
@@ -682,7 +683,10 @@ export const api = {
     request<Job>("/api/companies/find-emails", post({ company_ids: [companyId], crawl: true })),
   // Look up the owners of hand-picked companies in LinkedIn search results (and Apollo.io as a
   // backup), then find their emails. Companies that already have a decision-maker are skipped.
-  findPeople: (companyIds: number[], opts: { use_apollo?: boolean; find_emails?: boolean } = {}) =>
+  findPeople: (
+    companyIds: number[],
+    opts: { use_apollo?: boolean; find_emails?: boolean; confirm?: boolean } = {},
+  ) =>
     request<Job>("/api/companies/find-people", post({ company_ids: companyIds, ...opts })),
 
   // ----- companies -----

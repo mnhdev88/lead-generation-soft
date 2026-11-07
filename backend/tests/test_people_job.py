@@ -290,12 +290,12 @@ def test_find_people_endpoint(client, db, keys):
     assert (job["kind"], job["source"], job["status"], job["query"]) == ("people", "people", "queued",
                                                                          "2 selected companies")
     assert job["params"] == {"company_ids": sorted([alpha.id, beta.id]), "use_apollo": True, "find_emails": True,
-                             "force": False}
+                             "force": False, "confirm": False}
 
     r = client.post("/api/companies/find-people", json={"company_ids": [alpha.id], "use_apollo": False,
                                                         "find_emails": False})
     assert r.json()["params"] == {"company_ids": [alpha.id], "use_apollo": False, "find_emails": False,
-                                  "force": False}
+                                  "force": False, "confirm": False}
     assert r.json()["query"] == "1 selected company"
 
     assert client.post("/api/companies/find-people", json={"company_ids": [9999]}).status_code == 400
