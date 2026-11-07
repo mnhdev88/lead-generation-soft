@@ -427,6 +427,35 @@ class IdealCustomerSaved(BaseModel):
     poor: int
 
 
+class SignalStatOut(BaseModel):
+    signal: str  # e.g. "Verified email", "No website", "Size: small"
+    leads: int  # worked leads with it
+    good: int  # of them replied / interested / won
+    rate: float  # good / leads
+    rate_without: float | None  # among worked leads without it
+    lift: float | None  # rate - rate_without
+    advice: str | None  # "Works for you: worth more points" ...
+
+
+class ScoreBandOut(BaseModel):
+    band: str  # "80-100"
+    leads: int
+    rate: float
+
+
+class InsightsOut(BaseModel):
+    """What wins (app/insights.py)."""
+
+    worked: int  # leads with an outcome (good or bad)
+    good: int
+    open: int  # contacted recently, waiting for a reply
+    baseline: float | None  # good / worked
+    no_reply_days: int
+    min_leads: int
+    signals: list[SignalStatOut]
+    by_score: list[ScoreBandOut]
+
+
 class BouncedRequest(BaseModel):
     text: str = Field(min_length=1, max_length=200_000)  # bounced addresses, any separators
 

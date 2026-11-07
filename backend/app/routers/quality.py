@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .. import blocklist, fit
+from .. import blocklist, fit, insights
 from ..db import get_session
 from ..models import Company, DoNotContact
 from ..schemas import (
@@ -15,6 +15,7 @@ from ..schemas import (
     DoNotContactOut,
     IdealCustomer,
     IdealCustomerSaved,
+    InsightsOut,
 )
 from ..scoring import recompute_scores, rescore
 
@@ -111,3 +112,17 @@ def save_ideal_customer(body: IdealCustomer, session: Session = Depends(get_sess
     recompute_scores(session)
     good, poor = _fit_counts(session)
     return IdealCustomerSaved(profile=IdealCustomer(**profile), good=good, poor=poor)
+
+
+# ----- what wins ------------------------------------------------------------------------
+
+
+@router.get("/insights", response_model=InsightsOut)
+def what_wins(session: Session = Depends(get_session)):
+    """Which signals come with replies and wins, from the lead statuses you set."""
+    r = insights.build(session)
+    return InsightsOut(
+        worked=r.worked, good=r.good, open=r.open, baseline=r.baseline,
+        no_reply_days=insights.NO_REPLY_DAYS, min_leads=insights.MIN_LEADS,
+        signals=[vars(s) for s in r.signals], by_score=r.by_score,
+    )

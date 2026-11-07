@@ -2,6 +2,7 @@
 
 import { BouncedSection, DoNotContactSection } from "@/components/quality/DoNotContact";
 import { IdealCustomerSection } from "@/components/quality/IdealCustomer";
+import { WhatWinsSection } from "@/components/quality/WhatWins";
 
 /** Tools that keep the leads clean: your ideal customer, bounced emails, the do-not-contact list. */
 export function QualityPage() {
@@ -13,6 +14,7 @@ export function QualityPage() {
           Teach LeadGen from your results, so the leads it gives you get better over time.
         </p>
       </header>
+      <WhatWinsSection />
       <IdealCustomerSection />
       <BouncedSection />
       <DoNotContactSection />

@@ -745,6 +745,7 @@ export const api = {
   recheckListEmails: (listId: number) => request<Job>(`/api/lists/${listId}/recheck-emails`, post({})),
 
   // ----- lead quality: ideal customer, do not contact, bounces -----
+  getInsights: () => request<Insights>("/api/quality/insights"),
   getIdealCustomer: () => request<IdealCustomerSaved>("/api/quality/ideal-customer"),
   saveIdealCustomer: (profile: IdealCustomer) =>
     request<IdealCustomerSaved>("/api/quality/ideal-customer", { method: "PUT", body: JSON.stringify(profile) }),
@@ -769,6 +770,25 @@ export type IdealCustomer = {
   sizes: SizeBand[];
   min_rating: number | null;
   min_reviews: number | null;
+};
+/** What wins: which signals come with replies and wins (from your lead statuses). */
+export type Insights = {
+  worked: number;
+  good: number;
+  open: number;
+  baseline: number | null;
+  no_reply_days: number;
+  min_leads: number;
+  signals: {
+    signal: string;
+    leads: number;
+    good: number;
+    rate: number;
+    rate_without: number | null;
+    lift: number | null;
+    advice: string | null;
+  }[];
+  by_score: { band: string; leads: number; rate: number }[];
 };
 export type IdealCustomerSaved = { profile: IdealCustomer; good: number; poor: number };
 
