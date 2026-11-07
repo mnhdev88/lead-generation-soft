@@ -12,7 +12,7 @@ import {
   sortTeam,
 } from "@/components/CompanyDrawer";
 import { ExportMenu } from "@/components/ExportMenu";
-import { IntentBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge, SizeBadge } from "@/components/ui";
+import { IntentBadge, LeadStatusSelect, Phone, ScoreBadge, SeniorityBadge, SizeBadge, TableScrollHint } from "@/components/ui";
 import {
   api,
   HOT_INTENT,
@@ -457,8 +457,9 @@ export function ResultsTable({
       {error && <p className="text-sm text-[var(--danger)]">Could not load leads: {error}. Is the backend running?</p>}
 
       {/* On small screens the table scrolls sideways inside the card. */}
-      <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1440px] text-sm">
+      <TableScrollHint />
+      <div className="relative overflow-x-auto rounded-lg border border-[var(--border)]">
+        <table className="table-pin w-full min-w-[1440px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">

@@ -41,7 +41,8 @@ export function Nav() {
 
   return (
     <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--card)]/90 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-[1400px] items-center gap-3 px-4 py-2.5 sm:gap-6">
+      {/* Phones: logo + account on the first row, the sections on a full-width second row. */}
+      <div className="mx-auto flex w-full max-w-[1400px] flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2 sm:flex-nowrap sm:gap-6 sm:py-2.5">
         <Link href="/" className="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
           <span
             aria-hidden
@@ -49,20 +50,19 @@ export function Nav() {
           >
             L
           </span>
-          <span className="hidden sm:inline">LeadGen</span>
-          <span className="sr-only sm:hidden">LeadGen home</span>
+          <span>LeadGen</span>
         </Link>
-        <nav aria-label="Main" className="min-w-0">
+        <nav aria-label="Main" className="order-last -mx-1 w-[calc(100%+0.5rem)] min-w-0 overflow-x-auto sm:order-none sm:mx-0 sm:w-auto">
           <ul className="flex items-center gap-1">
             {links.map((l) => {
               const active = isActive(l.href);
               return (
-                <li key={l.href}>
+                <li key={l.href} className="flex-1 sm:flex-none">
                   <Link
                     href={l.href}
                     title={l.hint}
                     aria-current={active ? "page" : undefined}
-                    className={`block rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                    className={`block whitespace-nowrap rounded-lg px-2.5 py-2.5 text-center text-sm font-medium transition-colors sm:px-3 sm:py-1.5 ${
                       active
                         ? "bg-[var(--accent-soft)] text-[var(--accent)]"
                         : "text-[var(--muted)] hover:bg-[var(--muted-bg)] hover:text-[var(--foreground)]"
@@ -81,7 +81,7 @@ export function Nav() {
               href="/account"
               title={`${user.email}: change your password`}
               aria-current={isActive("/account") ? "page" : undefined}
-              className="hidden max-w-[16ch] truncate rounded-lg px-2 py-1.5 text-sm text-[var(--muted)] hover:bg-[var(--muted-bg)] hover:text-[var(--foreground)] sm:block"
+              className="block max-w-[12ch] truncate rounded-lg px-2 py-1.5 text-sm text-[var(--muted)] hover:bg-[var(--muted-bg)] hover:text-[var(--foreground)] sm:max-w-[16ch]"
             >
               {user.name}
             </Link>

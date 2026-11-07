@@ -62,7 +62,7 @@ export function WhatWinsSection() {
             </div>
           )}
 
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b border-[var(--border)] text-left text-xs text-[var(--muted)]">
                 <tr>

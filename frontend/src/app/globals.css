@@ -5,7 +5,7 @@
   --foreground: #18181b;
   --card: #ffffff;
   --border: #e4e4e7;
-  --muted: #71717a;
+  --muted: #63636b; /* 4.5:1 or more on both white and --muted-bg */
   --muted-bg: #f4f4f5;
   --accent: #4f46e5;
   --accent-soft: #eef2ff;
@@ -55,7 +55,7 @@ body {
 
 @layer components {
   .card {
-    @apply rounded-xl border border-[var(--border)] bg-[var(--card)] p-4;
+    @apply rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 sm:p-4;
   }
   .label {
     @apply text-sm font-medium;
@@ -128,5 +128,84 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .drawer-panel {
     animation: none;
+  }
+}
+
+/* ----- interaction basics ------------------------------------------------------------- */
+@layer base {
+  /* Everything you can click shows the hand cursor (browsers default buttons to an arrow). */
+  button:not(:disabled),
+  [role="button"],
+  [role="tab"],
+  summary,
+  select:not(:disabled),
+  label:has(> input[type="checkbox"]:not(:disabled)),
+  label:has(> input[type="radio"]:not(:disabled)) {
+    cursor: pointer;
+  }
+  /* A clear ring for keyboard users (fields keep their own focus ring). */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+/* ----- wide tables: keep the checkbox and the name in view while scrolling sideways ----- */
+@layer components {
+  .table-pin tbody tr {
+    background-color: var(--card); /* row colours (selected, hover) still win: utilities come later */
+  }
+  .table-pin tr > :is(th, td):nth-child(-n + 2):not([colspan]) {
+    position: sticky;
+    z-index: 1;
+    background-color: inherit;
+  }
+  .table-pin thead tr > :is(th, td):nth-child(-n + 2) {
+    background-color: var(--muted-bg);
+  }
+  .table-pin tr > :first-child:not([colspan]) {
+    left: 0;
+    width: 2.75rem;
+    min-width: 2.75rem;
+    max-width: 2.75rem;
+  }
+  .table-pin tr > :nth-child(2):not([colspan]) {
+    left: 2.75rem;
+    box-shadow: inset -1px 0 0 var(--border);
+  }
+  @media (max-width: 639px) {
+    /* On a phone the pinned name column takes about half the screen, not all of it. */
+    /* (A table hands its spare width to its columns and ignores max-width, so the column
+       shrinks to its content (width: 1%) and the content gets the width.) */
+    .table-pin tr > :nth-child(2):not([colspan]) {
+      width: 1%;
+    }
+    .table-pin tr > :nth-child(2):not([colspan]) > * {
+      width: 9rem;
+    }
+  }
+}
+
+/* ----- touch screens: controls big enough for a finger, and no zoom when typing ----------- */
+@media (pointer: coarse) {
+  .input {
+    min-height: 44px;
+    font-size: 16px; /* smaller text makes iPhones zoom in when the field is tapped */
+  }
+  .btn-primary,
+  .btn-secondary {
+    min-height: 44px;
+  }
+  .btn-xs,
+  .chip {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+  .checkbox {
+    width: 1.25rem;
+    height: 1.25rem;
   }
 }

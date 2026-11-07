@@ -6,7 +6,7 @@ import { useLatestRequest } from "@/lib/useLatest";
 import { AddToListButton } from "@/components/AddToListButton";
 import { ExportMenu } from "@/components/ExportMenu";
 import { CompanyCell, Missing, PersonEmailCell, PersonNameCell, PersonTitleCell } from "@/components/people/cells";
-import { FindOnLinkedIn, LeadStatusSelect, ScoreBadge } from "@/components/ui";
+import { FindOnLinkedIn, LeadStatusSelect, ScoreBadge, TableScrollHint } from "@/components/ui";
 import {
   api,
   LEAD_STATUS_LABEL,
@@ -382,8 +382,9 @@ export function PeopleTable({
       )}
 
       {/* On small screens the table scrolls sideways inside the card. */}
-      <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1100px] text-sm">
+      <TableScrollHint />
+      <div className="relative overflow-x-auto rounded-lg border border-[var(--border)]">
+        <table className="table-pin w-full min-w-[1100px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">

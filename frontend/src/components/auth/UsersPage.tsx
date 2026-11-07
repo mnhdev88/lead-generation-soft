@@ -46,7 +46,7 @@ export function UsersPage() {
       <AddUserForm onAdded={(u) => setUsers((prev) => [...(prev ?? []), u])} />
 
       {users && (
-        <div className="card overflow-x-auto p-0">
+        <div className="card relative overflow-x-auto p-0">
           <table className="w-full text-sm">
             <thead className="border-b border-[var(--border)] text-left text-xs text-[var(--muted)]">
               <tr>

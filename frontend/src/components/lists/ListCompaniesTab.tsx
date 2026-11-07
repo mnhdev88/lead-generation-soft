@@ -8,7 +8,7 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { BulkBar, Feedback, Pager, SelectAllBox } from "@/components/lists/parts";
 import { useAction, useRows } from "@/components/lists/useRows";
 import { companyHref, Missing } from "@/components/people/cells";
-import { IntentBadge, LeadStatusSelect, ScoreBadge, SizeBadge } from "@/components/ui";
+import { IntentBadge, LeadStatusSelect, ScoreBadge, SizeBadge, TableScrollHint } from "@/components/ui";
 import { api, LEAD_STATUS_LABEL, websiteNotRead, type Company, type CompanyFilters, type LeadStatus } from "@/lib/api";
 
 type SortBy = "name" | "score" | "intent";
@@ -86,8 +86,9 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
         </p>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1140px] text-sm">
+      <TableScrollHint />
+      <div className="relative overflow-x-auto rounded-lg border border-[var(--border)]">
+        <table className="table-pin w-full min-w-[1140px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">

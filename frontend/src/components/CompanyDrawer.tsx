@@ -342,7 +342,7 @@ export function CompanyDrawer({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="drawer-panel relative flex h-full w-full flex-col border-l border-[var(--border)] bg-[var(--background)] shadow-2xl outline-none sm:max-w-2xl"
+        className="drawer-panel relative flex h-full w-full flex-col overflow-y-auto border-l border-[var(--border)] bg-[var(--background)] shadow-2xl outline-none sm:max-w-2xl sm:overflow-y-visible"
       >
         {/* Header */}
         <div className="border-b border-[var(--border)] bg-[var(--card)] px-4 py-3 sm:px-5">
@@ -426,7 +426,9 @@ export function CompanyDrawer({
         </div>
 
         {/* Body */}
-        <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-5">
+        {/* Phones: the whole panel scrolls (the header would take half the screen); larger
+            screens keep the header in view and scroll only this part. */}
+        <div className="space-y-4 px-4 py-4 sm:flex-1 sm:overflow-y-auto sm:px-5">
           {actionError && (
             <p role="alert" className="text-sm text-[var(--danger)]">
               {actionError}

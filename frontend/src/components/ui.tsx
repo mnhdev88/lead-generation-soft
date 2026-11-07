@@ -243,3 +243,12 @@ export function FindOnLinkedIn({ name, companyName }: { name: string; companyNam
     </a>
   );
 }
+
+/** Phones only: wide tables scroll sideways, and nothing else says so. */
+export function TableScrollHint() {
+  return (
+    <p className="text-xs text-[var(--muted)] sm:hidden">
+      Swipe the table sideways for more columns <span aria-hidden>→</span>
+    </p>
+  );
+}

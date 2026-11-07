@@ -7,7 +7,7 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { BulkBar, Feedback, Pager, SelectAllBox } from "@/components/lists/parts";
 import { useAction, useRows } from "@/components/lists/useRows";
 import { CompanyCell, PersonEmailCell, PersonNameCell, PersonTitleCell } from "@/components/people/cells";
-import { LeadStatusSelect, ScoreBadge } from "@/components/ui";
+import { LeadStatusSelect, ScoreBadge, TableScrollHint } from "@/components/ui";
 import { api, LEAD_STATUS_LABEL, type LeadStatus, type PeopleFilters, type Person } from "@/lib/api";
 
 type SortBy = NonNullable<PeopleFilters["sort"]>;
@@ -85,8 +85,9 @@ export function ListPeopleTab({ listId, onChanged }: { listId: number; onChanged
         </p>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-        <table className="w-full min-w-[1000px] text-sm">
+      <TableScrollHint />
+      <div className="relative overflow-x-auto rounded-lg border border-[var(--border)]">
+        <table className="table-pin w-full min-w-[1000px] text-sm">
           <thead className="bg-[var(--muted-bg)] text-left text-xs uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="w-8 px-3 py-2">
