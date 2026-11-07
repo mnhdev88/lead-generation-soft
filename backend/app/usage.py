@@ -3,6 +3,7 @@
 Each request to a paid API first calls consume("google_places"). The count is stored
 per calendar month (UTC) in the api_usage table; when the monthly limit would be
 exceeded, consume() raises UsageLimitError and the request is not sent.
+A limit of 0 (or less) means no limit: requests are still counted, never refused.
 """
 from datetime import datetime, timezone
 
@@ -14,7 +15,7 @@ from .db import SessionLocal
 from .models import ApiUsage
 from .sources.base import SourceError
 
-# provider -> monthly request limit
+# provider -> monthly request limit (0 = no limit)
 PROVIDERS: dict[str, int] = {
     "google_places": config.GOOGLE_PLACES_MONTHLY_LIMIT,
     "hunter": config.HUNTER_MONTHLY_LIMIT,
@@ -77,15 +78,10 @@ def consume(provider: str, n: int = 1) -> None:
 
         # One UPDATE that only succeeds while under the limit, so two searches running
         # at once can never push the count past it.
-        result = session.execute(
-            update(ApiUsage)
-            .where(
-                ApiUsage.provider == provider,
-                ApiUsage.period == period,
-                ApiUsage.count + n <= limit,
-            )
-            .values(count=ApiUsage.count + n)
-        )
+        stmt = update(ApiUsage).where(ApiUsage.provider == provider, ApiUsage.period == period)
+        if limit > 0:
+            stmt = stmt.where(ApiUsage.count + n <= limit)
+        result = session.execute(stmt.values(count=ApiUsage.count + n))
         if result.rowcount == 0:
             session.rollback()
             used = session.scalar(

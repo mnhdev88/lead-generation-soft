@@ -352,8 +352,16 @@ export function SearchForm({
   );
 }
 
-/** "Google requests this month: 120 / 5000" with a small bar. */
+/** "Google requests this month: 120 / 5000" with a small bar ("120 used · no limit" when unlimited). */
 function UsageMeter({ usage, label, fullMessage }: { usage: Usage; label: string; fullMessage: string }) {
+  if (usage.limit <= 0) {
+    return (
+      <div className="flex justify-between rounded-lg bg-[var(--muted-bg)] px-3 py-2 text-xs">
+        <span className="text-[var(--muted)]">{label}</span>
+        <span className="font-medium tabular-nums">{usage.count.toLocaleString()} used · no limit</span>
+      </div>
+    );
+  }
   const pct = usage.limit > 0 ? Math.min(100, (usage.count / usage.limit) * 100) : 0;
   const color = pct >= 100 ? "var(--danger)" : pct >= 80 ? "var(--warn)" : "var(--accent)";
   return (

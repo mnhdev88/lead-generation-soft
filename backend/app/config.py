@@ -49,6 +49,7 @@ OVERPASS_ROUNDS = int(os.getenv("OVERPASS_ROUNDS", "3"))
 # --- Google Places (Step 2) ---
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
 # Hard cap on Places API requests per calendar month, to stay inside Google's free usage.
+# 0 = no limit (every request is still counted; Google bills what goes past its free usage).
 GOOGLE_PLACES_MONTHLY_LIMIT = int(os.getenv("GOOGLE_PLACES_MONTHLY_LIMIT", "900"))
 
 # --- Website crawler (Step 3) ---

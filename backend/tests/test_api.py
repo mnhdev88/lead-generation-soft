@@ -325,3 +325,15 @@ def test_usage_says_whether_hunter_is_configured(client, monkeypatch):
     monkeypatch.setattr(config, "HUNTER_API_KEY", "test-key")
     rows = {u["provider"]: u for u in client.get("/api/usage").json()}
     assert rows["hunter"]["configured"] is True
+
+
+def test_limit_zero_means_no_limit(db, monkeypatch):
+    from app import usage
+
+    monkeypatch.setitem(usage.PROVIDERS, "google_places", 0)
+    for _ in range(5):
+        usage.consume("google_places", 400)  # far past the old 900: never refused
+    assert usage.get_usage("google_places") == (2000, 0)  # still counted
+    monkeypatch.setitem(usage.PROVIDERS, "google_places", 2000)
+    with pytest.raises(usage.UsageLimitError):
+        usage.consume("google_places")
