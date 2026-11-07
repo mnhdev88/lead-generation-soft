@@ -38,7 +38,9 @@ def test_company_points_add_up_with_reasons():
 def test_best_email_grade_is_used():
     c = company(email="a@x.example", emails=["a@x.example", "b@x.example"],
                 email_statuses={"a@x.example": "invalid", "b@x.example": "catch_all"})
-    assert score_company(c)[1] == ["Catch-all email +15"]
+    assert score_company(c)[1] == ["Catch-all email, only a guess (risky) +8"]
+    c.email_sources = {"b@x.example": "website"}
+    assert score_company(c)[1] == ["Catch-all email, published by the business +20"]
     c = company(email="a@x.example", emails=["a@x.example"])  # not checked yet
     assert score_company(c)[1] == ["Unverified email +8"]
     c = company(email="a@x.example", emails=["a@x.example"], email_statuses={"a@x.example": "invalid"})
@@ -85,7 +87,7 @@ def test_contact_score():
 
 
 def test_contact_email_grades():
-    assert score_contact(Contact(email="a@x.example", email_status="catch_all"))[0] == 25
+    assert score_contact(Contact(email="a@x.example", email_status="catch_all"))[0] == 12  # only a guess
     assert score_contact(Contact(email="a@x.example", email_status="unknown"))[0] == 10
     assert score_contact(Contact(email="a@x.example", email_status="invalid"))[0] == 0
     assert score_contact(Contact(seniority="manager"))[1] == ["Manager +5"]
@@ -133,3 +135,26 @@ def test_recompute_only_missing_scores_old_leads_once(db):
     mo = db.query(Contact).filter_by(full_name="Mo").one()
     assert mo.seniority == "manager" and mo.score is not None
     assert recompute_scores(db, only_missing=True) == (0, 0)  # nothing left to do
+
+
+def test_catch_all_email_points_follow_the_evidence():
+    from app.models import Company as C
+
+    def person(**kw):
+        return Contact(full_name="Jane Doe", email="jane@x.example", email_status="catch_all", **kw)
+
+    cases = [
+        (dict(email_source="website"), "Catch-all email, published by the business +35"),
+        (dict(email_source="hunter", email_confidence=70), "Catch-all email, known to Hunter/Apollo +30"),
+        (dict(email_source="pattern", email_confidence=90), "Catch-all email, matches their proven email pattern +25"),
+        (dict(email_source="pattern", email_confidence=60), "Catch-all email, only a guess (risky) +12"),
+    ]
+    for kw, reason in cases:
+        assert score_contact(person(**kw), C(name="X"))[1][0] == reason
+
+
+def test_published_catch_all_email_is_preferred_over_a_guess():
+    c = company(email="guess@x.example", emails=["guess@x.example", "info@x.example"],
+                email_statuses={"guess@x.example": "catch_all", "info@x.example": "catch_all"},
+                email_sources={"info@x.example": "website"})
+    assert score_company(c)[1] == ["Catch-all email, published by the business +20"]

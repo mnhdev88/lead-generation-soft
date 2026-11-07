@@ -666,6 +666,11 @@ function EmailsSection({ company: c, onBounced }: { company: Company; onBounced:
           ))}
         </ul>
       )}
+      {c.mail_provider && (
+        <p className="text-xs text-[var(--muted)]" title="From the business's mail servers (MX records)">
+          Email hosted by: <span className="text-[var(--foreground)]">{c.mail_provider}</span>
+        </p>
+      )}
       {c.emails_checked_at && (
         <p className="text-[11px] text-[var(--muted)]">Checked {formatDate(c.emails_checked_at)}</p>
       )}

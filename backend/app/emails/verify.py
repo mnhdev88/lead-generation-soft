@@ -54,6 +54,7 @@ from ..db import SessionLocal
 from ..models import DomainInfo, EmailCheck
 from . import smtp as smtp_mod
 from .dns import REASON_DNS_ERROR, MxResult, Resolver, lookup_mx
+from .hosting import provider_key  # noqa: F401  (also used by tests as verify.provider_key)
 from .syntax import check_syntax, is_disposable, is_free, is_role, split_email
 
 log = logging.getLogger("emails.verify")
@@ -112,14 +113,6 @@ def reset_smtp_state() -> None:
         _blocked_until.clear()
         _connect_fail_streak = 0
         _port25_paused_until = 0.0
-
-
-def provider_key(mx_host: str) -> str:
-    """'acme-com.mail.protection.outlook.com' -> 'outlook.com'; 'mx.acme.co.uk' -> 'acme.co.uk'."""
-    parts = mx_host.lower().rstrip(".").split(".")
-    if len(parts) >= 3 and parts[-2] in {"co", "com", "net", "org", "ac", "gov", "edu"} and len(parts[-1]) == 2:
-        return ".".join(parts[-3:])
-    return ".".join(parts[-2:])
 
 
 def _host_lock(mx_host: str) -> threading.Lock:

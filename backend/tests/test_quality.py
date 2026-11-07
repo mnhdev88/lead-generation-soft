@@ -99,3 +99,17 @@ def test_bounced_email_stays_invalid_when_checked_again(client, db):
     client.post("/api/quality/bounced", json={"text": "jane@acme.com"})
     result = verify_emails(["jane@acme.com"], force=True, use_smtp=False)["jane@acme.com"]
     assert (result.status, result.reason) == ("invalid", "Bounced when you emailed it")
+
+
+def test_mail_provider_from_saved_mail_servers(client, db):
+    from app.emails.hosting import mail_provider
+
+    assert mail_provider(["acme-com.mail.protection.outlook.com"]) == "Microsoft 365"
+    assert mail_provider(["mx.acme.co.uk"]) == "Own or web-host mail server"
+    assert mail_provider([]) is None
+    acme, beta, gamma = companies(db)
+    db.add(DomainInfo(domain="beta.pk", mx_hosts=["aspmx.l.google.com"], has_mx=True))
+    db.commit()
+    got = {c["name"]: c["mail_provider"] for c in client.get("/api/companies").json()["items"]}
+    assert got == {"Acme Dental": None, "Beta Gym": "Google Workspace",
+                   "Gamma Cafe": "Free email address (Gmail, Yahoo…)"}

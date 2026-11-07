@@ -210,6 +210,8 @@ class CompanyOut(BaseModel):
     pagespeed: dict = {}  # mobile PageSpeed (app/pagespeed.py), {} = not checked
     list_ids: list[int] = []  # lists this company is in (filled by the router)
     do_not_contact: str | None = None  # why it is on the do-not-contact list (filled by the router)
+    # Who hosts its email, e.g. "Google Workspace" (app/emails/hosting.py; filled by the router)
+    mail_provider: str | None = None
     source: str
     contacts: list[ContactOut] = []  # sorted: decision-makers / most senior first
 

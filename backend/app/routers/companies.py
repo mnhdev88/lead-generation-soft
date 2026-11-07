@@ -6,9 +6,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from .. import blocklist, exporting
 from ..db import get_session
-from ..models import Activity, Company, Contact, JobResult, ListItem, SearchJob
+from ..emails.hosting import FREE, email_domain, mail_provider
+from ..models import Activity, Company, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from ..people import SENIORITY_RANK
 from ..providers import apollo, websearch
+from ..utils import own_domain
 from ..schemas import (
     ActivityOut,
     CompanyOut,
@@ -161,17 +163,41 @@ def _to_out(session: Session, companies: list[Company]) -> list[CompanyOut]:
         ):
             lists.setdefault(company_id, []).append(list_id)
     blocked = blocklist.Matcher(session)
+    providers = _mail_providers(session, companies)
     out = []
     for c in companies:
         item = CompanyOut.model_validate(c)
         item.contacts = sorted(item.contacts, key=_contact_order)
         item.list_ids = lists.get(c.id, [])
+        item.mail_provider = providers.get(c.id)
         if blocked:
             item.do_not_contact = blocked.company(c)
             by_id = {p.id: p for p in c.contacts}
             for person in item.contacts:
                 person.do_not_contact = blocked.contact(by_id[person.id], c)
         out.append(item)
+    return out
+
+
+def _mail_domain(c: Company) -> str | None:
+    """The domain its email lives on: its best email's domain, else its website's."""
+    return email_domain(c.email) or own_domain(c.domain)
+
+
+def _mail_providers(session: Session, companies: list[Company]) -> dict[int, str]:
+    """Who hosts each company's email, from the mail servers the email check saved."""
+    domains = {d for d in map(_mail_domain, companies) if d}
+    mx = dict(session.execute(
+        select(DomainInfo.domain, DomainInfo.mx_hosts).where(DomainInfo.domain.in_(domains))
+    ).all()) if domains else {}
+    out = {}
+    for c in companies:
+        domain = _mail_domain(c)
+        provider = mail_provider(mx.get(domain)) if domain else None
+        if provider is None and c.email and email_domain(c.email) is None:
+            provider = FREE  # only a Gmail / Yahoo... address
+        if provider:
+            out[c.id] = provider
     return out
 
 

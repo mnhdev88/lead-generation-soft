@@ -426,6 +426,7 @@ export type Company = {
   business_kind?: BusinessKind | null;
   list_ids: number[];
   do_not_contact?: string | null; // why it is on the do-not-contact list (shown only on request)
+  mail_provider?: string | null; // who hosts its email, e.g. "Google Workspace" (known after an email check)
   source: string;
   contacts: Contact[]; // decision-makers / most senior first
 };
