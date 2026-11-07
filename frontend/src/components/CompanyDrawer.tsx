@@ -358,7 +358,14 @@ export function CompanyDrawer({
               >
                 {busy === "verify" ? "Starting…" : "Verify emails"}
               </button>
-              <AddToListButton companyIds={[company.id]} onDone={() => setReload((r) => r + 1)} size="sm" />
+              <AddToListButton
+                companyIds={[company.id]}
+                onDone={() => {
+                  setReload((r) => r + 1);
+                  onChanged(); // the table's "N lists" badge too
+                }}
+                size="sm"
+              />
             </div>
           )}
         </div>

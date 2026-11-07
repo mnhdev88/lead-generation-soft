@@ -13,7 +13,7 @@ users, user_sessions - who may log in, and who is logged in right now
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -147,6 +147,13 @@ class Company(Base):
         from .intent import business_kind  # here, not at the top: intent.py imports this module
 
         return business_kind(self)
+
+    def forget_website_checks(self) -> None:
+        """The website changed: the crawl and PageSpeed results were for the old one, so the
+        next crawl (and the idle PageSpeed back-fill) look at the new website."""
+        self.enrich_status, self.enrich_error, self.enriched_at = None, None, None
+        self.website_signals = {}
+        self.pagespeed, self.pagespeed_checked_at = {}, None
     activities: Mapped[list["Activity"]] = relationship(back_populates="company", cascade="all, delete-orphan")
 
 
@@ -257,7 +264,15 @@ class ListItem(Base):
     """One company OR one contact in a list."""
 
     __tablename__ = "list_items"
-    __table_args__ = (UniqueConstraint("list_id", "company_id", "contact_id", name="uq_list_item"),)
+    # One of company_id / contact_id is always empty (NULL), and the database treats every
+    # NULL as different, so uq_list_item alone never stops doubles: these two indexes do.
+    __table_args__ = (
+        UniqueConstraint("list_id", "company_id", "contact_id", name="uq_list_item"),
+        Index("uq_list_company", "list_id", "company_id", unique=True,
+              sqlite_where=text("company_id IS NOT NULL"), postgresql_where=text("company_id IS NOT NULL")),
+        Index("uq_list_contact", "list_id", "contact_id", unique=True,
+              sqlite_where=text("contact_id IS NOT NULL"), postgresql_where=text("contact_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     list_id: Mapped[int] = mapped_column(ForeignKey("lead_lists.id"), index=True)

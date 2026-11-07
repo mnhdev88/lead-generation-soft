@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useLatestRequest } from "@/lib/useLatest";
 import { EmailLine, emailStatusOf } from "@/components/CompanyDrawer";
 import { ExportMenu } from "@/components/ExportMenu";
 import { BulkBar, Feedback, Pager, SelectAllBox } from "@/components/lists/parts";
@@ -40,13 +41,17 @@ export function ListCompaniesTab({ listId, onChanged }: { listId: number; onChan
     }, "Could not change the status");
 
   // Show the new status at once; undo it if saving fails.
+  const latestRequest = useLatestRequest();
   async function changeStatus(c: Company, status: LeadStatus) {
     const before = c.lead_status;
     rows.patchRow(c.id, { lead_status: status });
     action.setError(null);
+    const isLatest = latestRequest(c.id);
     try {
-      rows.patchRow(c.id, await api.updateCompany(c.id, { lead_status: status }));
+      const saved = await api.updateCompany(c.id, { lead_status: status });
+      if (isLatest()) rows.patchRow(c.id, saved);
     } catch (err) {
+      if (!isLatest()) return; // a newer change is on its way: its answer decides
       rows.patchRow(c.id, { lead_status: before });
       action.setError(err instanceof Error ? err.message : "Could not change the status");
     }

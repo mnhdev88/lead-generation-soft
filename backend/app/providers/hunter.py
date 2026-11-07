@@ -7,7 +7,8 @@ Docs: https://hunter.io/api-documentation/v2#domain-search
 - Optional backup: only used when HUNTER_API_KEY is set in backend/.env.
 - Free plan = 25 searches a month and at most 10 emails per search. Every request is counted
   first with usage.consume("hunter"); at the monthly cap that raises usage.UsageLimitError.
-- Any other problem (bad key, Hunter down, no internet) is logged and gives an empty result.
+- Any other problem (bad key, Hunter down, no internet) raises HunterError, so the caller
+  doesn't mistake it for "Hunter knows no one at this domain".
 """
 import logging
 import re
@@ -26,6 +27,15 @@ MAX_LIMIT = 10  # free plan maximum per search (paid plans allow up to 100)
 
 # Pattern made only of {first} {last} {f} {l} and . _ - (Hunter uses the same syntax as we do).
 _PATTERN_RE = re.compile(r"^(?:\{(?:first|last|f|l)\}|[._-])+$")
+
+class HunterError(Exception):
+    """Hunter couldn't answer (network, bad key, Hunter's own quota, server error).
+    `stop` = True when every later request would fail the same way (key refused, quota)."""
+
+    def __init__(self, message: str, stop: bool = False):
+        super().__init__(message)
+        self.stop = stop
+
 
 # Tests set this to an httpx.MockTransport so no real network is used.
 transport: httpx.BaseTransport | None = None
@@ -78,7 +88,8 @@ def _parse(data: dict) -> tuple[str | None, list[HunterPerson]]:
 def domain_search(domain: str, limit: int = 10, *,
                   http_transport: httpx.BaseTransport | None = None) -> tuple[str | None, list[HunterPerson]]:
     """Ask Hunter for the email pattern and people of `domain`.
-    Returns (pattern or None, people). Raises usage.UsageLimitError at the monthly cap."""
+    Returns (pattern or None, people). Raises usage.UsageLimitError at the monthly cap and
+    HunterError when Hunter couldn't answer."""
     if not available():
         log.info("Hunter.io skipped: no HUNTER_API_KEY")
         return None, []
@@ -95,7 +106,7 @@ def domain_search(domain: str, limit: int = 10, *,
             response = client.get(API_URL, params=params)
     except httpx.HTTPError as e:
         log.warning("Hunter.io request for %s failed: %s", domain, type(e).__name__)
-        return None, []
+        raise HunterError("couldn't reach Hunter.io") from e
 
     if response.status_code != 200:
         # e.g. 401 bad key, 429 Hunter's own monthly quota used up, 451 opted out, 5xx
@@ -106,10 +117,14 @@ def domain_search(domain: str, limit: int = 10, *,
         except (ValueError, AttributeError):
             pass
         log.warning("Hunter.io error for %s: HTTP %s %s", domain, response.status_code, details)
-        return None, []
+        if response.status_code in (401, 403):
+            raise HunterError("Hunter.io refused the key (check HUNTER_API_KEY)", stop=True)
+        if response.status_code == 429:
+            raise HunterError("Hunter.io's own limit is used up", stop=True)
+        raise HunterError(f"Hunter.io error (HTTP {response.status_code})")
     try:
         data = response.json().get("data") or {}
     except (ValueError, AttributeError):
         log.warning("Hunter.io sent an unreadable answer for %s", domain)
-        return None, []
+        raise HunterError("Hunter.io sent an unreadable answer") from None
     return _parse(data)

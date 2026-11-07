@@ -100,6 +100,11 @@ def parse_phone(
     raw = (raw or "").strip()
     if not raw:
         return None
+    if ";" in raw:
+        # OpenStreetMap lists several numbers as "+92 300 1234567;+92 42 35761234":
+        # the first one that can be read.
+        parts = [p for p in (parse_phone(part, country, lat, lon) for part in raw.split(";")) if p]
+        return next((p for p in parts if p.e164), parts[0] if parts else None)
     unknown = PhoneInfo(e164=None, display=raw, type=None)
 
     # 1. "+92 ..." or "0092 ...": the number says which country it is.

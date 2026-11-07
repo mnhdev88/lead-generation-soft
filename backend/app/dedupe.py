@@ -291,9 +291,18 @@ def merge_companies(session: Session, keep: Company, drop: Company, reason: str 
         # (SQLite gives dates back without a time zone, new ones have one: compare without.)
         when = c.enriched_at.replace(tzinfo=None) if c.enriched_at else datetime.min
         return (c.enrich_status == "done", c.enrich_status is not None, when)
-    if crawl_rank(drop) > crawl_rank(keep) and drop.website == keep.website:
+    def take_drops_crawl():
         keep.website_signals, keep.enrich_status = drop.website_signals, drop.enrich_status
         keep.enrich_error, keep.enriched_at = drop.enrich_error, drop.enriched_at
+    if keep.website != old_website:
+        # Keep's crawl was of its old website: only drop's can still be right.
+        if drop.website == keep.website:
+            take_drops_crawl()
+        else:
+            keep.enrich_status, keep.enrich_error, keep.enriched_at = None, None, None
+            keep.website_signals = {}
+    elif crawl_rank(drop) > crawl_rank(keep) and drop.website == keep.website:
+        take_drops_crawl()
 
     # Your work on the lead: a status beyond "new" wins.
     if (keep.lead_status or "new") == "new" and (drop.lead_status or "new") != "new":

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useLatestRequest } from "@/lib/useLatest";
 import { AddToListButton } from "@/components/AddToListButton";
 import { ExportMenu } from "@/components/ExportMenu";
 import { CompanyCell, Missing, PersonEmailCell, PersonNameCell, PersonTitleCell } from "@/components/people/cells";
@@ -159,13 +160,17 @@ export function PeopleTable({
   function patchRow(id: number, changes: Partial<Person>) {
     setData((d) => ({ ...d, items: d.items.map((x) => (x.id === id ? { ...x, ...changes } : x)) }));
   }
+  const latestRequest = useLatestRequest();
   async function changeStatus(p: Person, status: LeadStatus) {
     const before = p.lead_status;
     patchRow(p.id, { lead_status: status }); // show it at once…
     setActionError(null);
+    const isLatest = latestRequest(p.id);
     try {
-      patchRow(p.id, await api.updatePerson(p.id, { lead_status: status }));
+      const saved = await api.updatePerson(p.id, { lead_status: status });
+      if (isLatest()) patchRow(p.id, saved);
     } catch (err) {
+      if (!isLatest()) return; // a newer change is on its way: its answer decides
       patchRow(p.id, { lead_status: before }); // …and undo if saving fails
       setActionError(err instanceof Error ? err.message : "Could not change the status");
     }

@@ -48,10 +48,11 @@ def anon_client(db):
     Sends the header the dashboard sends, so only the login is missing."""
     from fastapi.testclient import TestClient
 
-    from app.auth import ip_limiter
+    from app.auth import ip_limiter, unknown_email_limiter
     from app.main import app
 
     ip_limiter.reset()
+    unknown_email_limiter.reset()
     with TestClient(app, headers={"X-Requested-With": "leadgen"}) as test_client:
         yield test_client
 

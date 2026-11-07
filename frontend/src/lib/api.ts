@@ -604,11 +604,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 401 && !path.startsWith("/api/auth/")) goToLogin();
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    const detail = body?.detail;
-    throw new Error(typeof detail === "string" ? detail : `Request failed (${res.status})`);
+    throw new Error(errorText(body?.detail) ?? `Request failed (${res.status})`);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+/** The backend's reason for refusing a request. Our own errors send one sentence; the
+ *  automatic checks of the request (HTTP 422) send a list like
+ *  [{loc: ["body", "company_ids"], msg: "List should have at most 500 items..."}]. */
+export function errorText(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return null;
+  const lines = detail
+    .filter((d): d is { loc?: unknown[]; msg: string } => typeof d?.msg === "string")
+    .map((d) => {
+      const field = (d.loc ?? []).filter((p) => p !== "body" && typeof p === "string").join(".");
+      return field ? `${field}: ${d.msg}` : d.msg;
+    });
+  return lines.length ? lines.join("; ") : null;
 }
 
 export function filtersToQuery(filters: Record<string, QueryValue>, extra: Record<string, number> = {}) {

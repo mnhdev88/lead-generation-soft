@@ -41,10 +41,16 @@ export default function Home() {
 
   const finishedIds = useRef<Set<number> | null>(null);
   const progressRef = useRef("");
+  // Polls can overlap: an answer older than the one already shown is ignored.
+  const sentSeq = useRef(0);
+  const shownSeq = useRef(0);
 
   const loadJobs = useCallback(async () => {
+    const seq = ++sentSeq.current;
     try {
       const next = await api.listJobs();
+      if (seq < shownSeq.current) return;
+      shownSeq.current = seq;
       // A job (search, website crawl or email check) has just finished.
       const finished = new Set(next.filter(isFinished).map((j) => j.id));
       const justFinished =
@@ -64,7 +70,7 @@ export default function Home() {
       setJobs(next);
       setOffline(false);
     } catch {
-      setOffline(true);
+      if (seq >= shownSeq.current) setOffline(true);
     }
   }, []);
 

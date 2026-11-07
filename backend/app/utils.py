@@ -38,9 +38,15 @@ SHARED_DOMAIN_SUFFIXES = (
 def own_domain(domain: str | None) -> str | None:
     """The company's own domain, or None for e.g. a Facebook page or a free Wix site."""
     domain = (domain or "").lower()
-    if not domain or domain in SHARED_DOMAINS or domain.endswith(SHARED_DOMAIN_SUFFIXES):
+    if not domain or is_shared_platform(domain) or domain.endswith(SHARED_DOMAIN_SUFFIXES):
         return None
     return domain
+
+
+def is_shared_platform(domain: str | None) -> bool:
+    """True for facebook.com and its sub-domains too (m.facebook.com, sites.google.com...)."""
+    host = (domain or "").lower()
+    return bool(host) and any(host == d or host.endswith("." + d) for d in SHARED_DOMAINS)
 
 
 def merge_emails(*lists: list[str]) -> list[str]:

@@ -36,6 +36,21 @@ def _add_missing_columns() -> None:
                 conn.execute(text(ddl))
 
 
+def _drop_doubled_list_items() -> None:
+    """Older versions could put the same company or person in a list twice. Keep the first
+    copy, so the unique indexes on list_items can be created."""
+    with engine.begin() as conn:
+        if not inspect(conn).has_table("list_items"):
+            return
+        for column in ("company_id", "contact_id"):
+            result = conn.execute(text(
+                f"DELETE FROM list_items WHERE {column} IS NOT NULL AND id NOT IN ("
+                f"SELECT MIN(id) FROM list_items WHERE {column} IS NOT NULL GROUP BY list_id, {column})"
+            ))
+            if result.rowcount:
+                log.info("Removed %s doubled list entries (%s)", result.rowcount, column)
+
+
 def _add_missing_indexes() -> None:
     """Indexes of columns added by _add_missing_columns (create_all skips existing tables)."""
     with engine.begin() as conn:
@@ -49,6 +64,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _drop_doubled_list_items()
     _add_missing_indexes()
 
 

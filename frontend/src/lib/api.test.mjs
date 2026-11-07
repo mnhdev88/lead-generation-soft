@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  errorText,
   intentBadgeSpeech,
   linkedinCompanySearchUrl,
   linkedinPeopleSearchUrl,
@@ -167,4 +168,17 @@ test("saved LinkedIn page link is used when present", () => {
   assert.equal(savedLinkedinUrl({ facebook: "https://facebook.com/acme" }), null);
   assert.equal(savedLinkedinUrl({ linkedin: "  " }), null);
   assert.equal(savedLinkedinUrl(null), null);
+});
+
+test("errorText shows the backend's reason, including request checks (422)", () => {
+  assert.equal(errorText("List not found."), "List not found.");
+  assert.equal(
+    errorText([
+      { loc: ["body", "company_ids"], msg: "List should have at most 500 items after validation, not 612" },
+      { loc: ["body", "places", 0], msg: "String should have at least 2 characters" },
+    ]),
+    "company_ids: List should have at most 500 items after validation, not 612; places: String should have at least 2 characters",
+  );
+  assert.equal(errorText([{ nonsense: true }]), null);
+  assert.equal(errorText(undefined), null);
 });

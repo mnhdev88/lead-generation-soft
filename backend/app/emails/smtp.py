@@ -45,6 +45,7 @@ REASON_BLOCKED = "Mail server refused the check (our IP is blocked)"
 REASON_MS_NO_USER = "Mailbox does not exist (Microsoft 365)"
 REASON_CONNECT = "Couldn't connect to the mail server (port 25 may be blocked on this network)"
 REASON_PRIVATE = "Mail server is on a private network"
+REASON_SENDER = "Mail server refused our sender address (set SMTP_MAIL_FROM)"
 
 # factory(mx_host, timeout_seconds, helo_host) -> a connected smtplib.SMTP-like object
 SmtpFactory = Callable[[str, float, str], Any]
@@ -132,6 +133,13 @@ _NO_USER_TEXT_RE = re.compile(
     r"no longer (?:active|available|with)|not listed in|invalid mailbox|bad destination mailbox|"
     r"recip(?:ient)?notfound|not found in (?:the )?directory"
 )
+# The server refuses OUR sender address (MAIL FROM). Many servers (Postfix with
+# smtpd_delay_reject, Exim sender verification) only say so in their answer to RCPT TO, often
+# with words like "does not exist" - that is about us, not about the mailbox we asked for.
+_SENDER_RE = re.compile(
+    r"\b5\.1\.[78]\b|sender|mail from|envelope from|return[- ]path|from address|"
+    r"verify failed|sender verif"
+)
 _DISABLED_RE = re.compile(r"\b5\.2\.1\b|(?:account|mailbox|user) (?:has been |is )?(?:disabled|inactive|suspended)"
                           r"|is disabled")
 _FULL_RE = re.compile(r"\b5\.2\.2\b|mailbox (?:is )?full|over ?quota|quota exceeded|insufficient storage")
@@ -141,8 +149,9 @@ _POLICY_RE = re.compile(r"\b5\.7\.\d+\b|access denied")
 _GREYLIST_RE = re.compile(r"greylist|graylist|try (?:again )?later|temporar")
 
 
-def classify_reply(code: int | None, message: str | None) -> tuple[str, str]:
-    """Turn one SMTP answer into (category, short plain-English reason)."""
+def classify_reply(code: int | None, message: str | None, mail_from: str | None = None) -> tuple[str, str]:
+    """Turn one SMTP answer into (category, short plain-English reason).
+    With `mail_from`, an answer that quotes our own sender address is about us, not the mailbox."""
     msg = (message or "").lower()
     if code is None:
         return UNCLEAR, "No answer from the mail server"
@@ -161,6 +170,8 @@ def classify_reply(code: int | None, message: str | None) -> tuple[str, str]:
             return TEMPORARY, "Mail server asked us to try later (greylisting)"
         return TEMPORARY, "Mail server is busy; try later"
     if 500 <= code < 600:
+        if _SENDER_RE.search(msg) or (mail_from and mail_from.lower() in msg):
+            return UNCLEAR, REASON_SENDER
         if _MS_NO_USER_RE.search(msg):
             return REJECTED, REASON_MS_NO_USER
         if _FULL_RE.search(msg):
@@ -270,9 +281,13 @@ def _run_session(client, host, emails, helo_host, mail_from, probe_address) -> S
         if probe_address:
             code, msg = client.rcpt(probe_address)
             result.probe = Reply(code, _text(msg))
-            category, _ = classify_reply(code, result.probe.message)
+            category, why = classify_reply(code, result.probe.message, mail_from)
             if category == BLOCKED:
                 result.failure, result.reason = "blocked", REASON_BLOCKED
+                return result
+            if why == REASON_SENDER:
+                # It will say the same for every address: asking more tells us nothing.
+                result.failure, result.reason = "refused", REASON_SENDER
                 return result
             if category == ACCEPTED:
                 return result  # catch-all: every address would be accepted, no need to ask more
@@ -281,7 +296,7 @@ def _run_session(client, host, emails, helo_host, mail_from, probe_address) -> S
             code, msg = client.rcpt(email)
             reply = Reply(code, _text(msg))
             result.replies[email] = reply
-            category, _ = classify_reply(code, reply.message)
+            category, _ = classify_reply(code, reply.message, mail_from)
             if category == BLOCKED:
                 result.failure, result.reason = "blocked", REASON_BLOCKED
                 break

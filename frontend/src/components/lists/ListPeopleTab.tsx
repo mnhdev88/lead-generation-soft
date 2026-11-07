@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useLatestRequest } from "@/lib/useLatest";
 import { ExportMenu } from "@/components/ExportMenu";
 import { BulkBar, Feedback, Pager, SelectAllBox } from "@/components/lists/parts";
 import { useAction, useRows } from "@/components/lists/useRows";
@@ -39,13 +40,17 @@ export function ListPeopleTab({ listId, onChanged }: { listId: number; onChanged
     }, "Could not change the status");
 
   // Show the new status at once; undo it if saving fails.
+  const latestRequest = useLatestRequest();
   async function changeStatus(p: Person, status: LeadStatus) {
     const before = p.lead_status;
     rows.patchRow(p.id, { lead_status: status });
     action.setError(null);
+    const isLatest = latestRequest(p.id);
     try {
-      rows.patchRow(p.id, await api.updatePerson(p.id, { lead_status: status }));
+      const saved = await api.updatePerson(p.id, { lead_status: status });
+      if (isLatest()) rows.patchRow(p.id, saved);
     } catch (err) {
+      if (!isLatest()) return; // a newer change is on its way: its answer decides
       rows.patchRow(p.id, { lead_status: before });
       action.setError(err instanceof Error ? err.message : "Could not change the status");
     }

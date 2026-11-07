@@ -87,3 +87,40 @@ def test_delete_list_keeps_leads(client, db):
     db.expire_all()
     assert db.query(ListItem).count() == 0
     assert db.query(Company).count() == 2 and db.query(Contact).count() == 1
+
+
+def test_database_refuses_the_same_lead_twice_in_a_list(db):
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import LeadList
+
+    a, _, p = add_leads(db)
+    lst = LeadList(name="L")
+    db.add(lst)
+    db.flush()
+    db.add_all([ListItem(list_id=lst.id, company_id=a.id), ListItem(list_id=lst.id, contact_id=p.id)])
+    db.commit()
+    for twin in (ListItem(list_id=lst.id, company_id=a.id), ListItem(list_id=lst.id, contact_id=p.id)):
+        db.add(twin)
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+
+
+def test_doubles_from_older_versions_are_removed_at_startup(db):
+    from sqlalchemy import text
+
+    from app.db import engine, init_db
+    from app.models import LeadList
+
+    a, _, _ = add_leads(db)
+    lst = LeadList(name="L")
+    db.add(lst)
+    db.commit()
+    with engine.begin() as conn:  # an old database: no unique index yet, a doubled entry
+        conn.execute(text("DROP INDEX uq_list_company"))
+        conn.execute(text("INSERT INTO list_items (list_id, company_id, added_at) VALUES (:l, :c, :t), (:l, :c, :t)"),
+                     {"l": lst.id, "c": a.id, "t": "2026-01-01 00:00:00"})
+    init_db()
+    assert db.query(ListItem).filter_by(list_id=lst.id, company_id=a.id).count() == 1

@@ -14,7 +14,7 @@ from app.emails import CheckResult, FoundEmail
 from app.enrich import PersonFound, WebsiteData
 from app.models import Company, Contact, DomainInfo, JobResult, SearchJob
 from app.people import Classification
-from app.providers.hunter import HunterPerson
+from app.providers.hunter import HunterError, HunterPerson
 from app.sources import SOURCES, CompanyResult, Source
 from app.usage import UsageLimitError
 
@@ -35,6 +35,7 @@ class FakeEngine:
         self.hunter_people: dict[str, list[HunterPerson]] = {}
         self.hunter_calls: list[str] = []
         self.hunter_capped = False
+        self.hunter_error = None  # a HunterError to raise
 
     # app.emails
     def verify_emails(self, emails, *, force=False, use_smtp=None):
@@ -79,6 +80,8 @@ class FakeEngine:
             if self.hunter_capped:
                 raise UsageLimitError("Monthly Hunter.io limit reached (25/25).")
             self.hunter_calls.append(domain)
+            if self.hunter_error:
+                raise self.hunter_error
             return "{first}", self.hunter_people.get(domain, [])
 
         return SimpleNamespace(available=lambda: self.hunter_key, domain_search=domain_search)
@@ -426,6 +429,26 @@ def test_hunter_never_asked_twice_for_a_domain(db, engine):
     info = db.scalar(select(DomainInfo).where(DomainInfo.domain == "chain.pk"))
     assert info.hunter_checked_at is not None
     assert (info.email_pattern, info.pattern_source) == ("{first}", "hunter")  # Hunter's pattern kept
+
+
+def test_hunter_failure_is_not_remembered(db, engine):
+    # Hunter was down: ask again next time instead of skipping the domain for a month.
+    a = company(db, "A", website="https://a.pk", domain="a.pk")
+    engine.hunter_error = HunterError("Hunter.io error (HTTP 500)")
+    run_emails(db, company_ids=[a.id])
+    assert db.scalar(select(DomainInfo).where(DomainInfo.domain == "a.pk")) is None
+    engine.hunter_error = None
+    run_emails(db, company_ids=[a.id])
+    assert engine.hunter_calls == ["a.pk", "a.pk"]
+
+
+def test_hunter_key_refused_stops_hunter_for_the_job(db, engine):
+    a = company(db, "A", domain="a.pk")
+    b = company(db, "B", domain="b.pk")
+    engine.hunter_error = HunterError("Hunter.io refused the key (check HUNTER_API_KEY)", stop=True)
+    job = run_emails(db, company_ids=[a.id, b.id])
+    assert len(engine.hunter_calls) == 1  # not one wasted credit per company
+    assert job.progress_message.endswith("Hunter.io skipped: Hunter.io refused the key (check HUNTER_API_KEY).")
 
 
 def test_hunter_generic_emails_are_not_people(db, engine):

@@ -86,3 +86,10 @@ def test_invalid_phone_scores_nothing(db):
     apply_company_phone(company)
     _, reasons = score_company(company)
     assert not any(r.startswith("Phone") for r in reasons)
+
+
+def test_several_numbers_from_openstreetmap_use_the_first_readable_one():
+    info = parse_phone("+92 300 1234567;+92 42 35761234")
+    assert (info.e164, info.type) == ("+923001234567", "mobile")
+    info = parse_phone("call us; 0300 1234567", "PK")
+    assert info.e164 == "+923001234567"

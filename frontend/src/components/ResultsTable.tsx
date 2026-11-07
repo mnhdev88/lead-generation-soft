@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import { useLatestRequest } from "@/lib/useLatest";
 import { AddToListButton } from "@/components/AddToListButton";
 import {
   ContactEmail,
@@ -228,13 +229,17 @@ export function ResultsTable({
   function patchRow(id: number, changes: Partial<Company>) {
     setData((d) => ({ ...d, items: d.items.map((x) => (x.id === id ? { ...x, ...changes } : x)) }));
   }
+  const latestRequest = useLatestRequest();
   async function changeStatus(c: Company, status: LeadStatus) {
     const before = c.lead_status;
     patchRow(c.id, { lead_status: status });
     setActionError(null);
+    const isLatest = latestRequest(c.id);
     try {
-      patchRow(c.id, await api.updateCompany(c.id, { lead_status: status }));
+      const saved = await api.updateCompany(c.id, { lead_status: status });
+      if (isLatest()) patchRow(c.id, saved);
     } catch (err) {
+      if (!isLatest()) return; // a newer change is on its way: its answer decides
       patchRow(c.id, { lead_status: before });
       setActionError(err instanceof Error ? err.message : "Could not change the status");
     }

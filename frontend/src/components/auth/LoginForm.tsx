@@ -6,10 +6,17 @@ import { api } from "@/lib/api";
 
 /** Only go back to a page on this site ("/people?x=1"), never to another website. */
 function safeNext(next: string | null) {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\") || next.startsWith("/login")) {
+  if (!next || !next.startsWith("/")) return "/";
+  // Let the browser read it the way it would when navigating (it drops tabs and newlines,
+  // so "/\t/evil.com" means "//evil.com"), then keep it only if it stays on this site.
+  let url: URL;
+  try {
+    url = new URL(next, window.location.origin);
+  } catch {
     return "/";
   }
-  return next;
+  if (url.origin !== window.location.origin || url.pathname.startsWith("/login")) return "/";
+  return url.pathname + url.search + url.hash;
 }
 
 export function LoginForm() {

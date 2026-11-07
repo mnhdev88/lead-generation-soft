@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from . import config
 from .models import Company
-from .utils import SHARED_DOMAINS, extract_domain
+from .utils import extract_domain, is_shared_platform
 
 log = logging.getLogger("pagespeed")
 
@@ -114,8 +114,7 @@ def is_web_url(url: str | None) -> bool:
 def is_shared_page(website: str | None, domain: str | None = None) -> bool:
     """True for a Facebook / Instagram / Yelp / Linktree ... page (also m.facebook.com).
     Free builder sites like joes.wixsite.com are the business's own site: False."""
-    host = (domain or extract_domain(website) or "").lower()
-    return bool(host) and any(host == d or host.endswith("." + d) for d in SHARED_DOMAINS)
+    return is_shared_platform(domain or extract_domain(website))
 
 
 # ----- one test ---------------------------------------------------------------

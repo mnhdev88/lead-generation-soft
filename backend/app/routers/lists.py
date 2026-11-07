@@ -2,6 +2,7 @@
 people; deleting a list never deletes the leads themselves."""
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import get_session
@@ -113,10 +114,13 @@ def add_items(list_id: int, body: ListItemsRequest, session: Session = Depends(g
         existing = set(session.scalars(select(model.id).where(model.id.in_(wanted))))
         already = set(session.scalars(select(column).where(ListItem.list_id == list_id, column.in_(wanted))))
         for item_id in sorted(existing - already):
-            if model is Company:
-                session.add(ListItem(list_id=list_id, company_id=item_id))
-            else:
-                session.add(ListItem(list_id=list_id, contact_id=item_id))
+            item = (ListItem(list_id=list_id, company_id=item_id) if model is Company
+                    else ListItem(list_id=list_id, contact_id=item_id))
+            try:
+                with session.begin_nested():  # a request at the same moment may have added it
+                    session.add(item)
+            except IntegrityError:
+                continue
             added += 1
     session.commit()
     return ListItemsResult(changed=added)

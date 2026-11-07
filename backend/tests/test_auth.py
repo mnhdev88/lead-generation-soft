@@ -148,6 +148,16 @@ def test_account_locks_after_too_many_wrong_passwords(db, anon_client):
     assert login(anon_client).status_code == 200
 
 
+def test_lockout_does_not_reveal_which_emails_have_an_account(db, anon_client):
+    add_user(db)
+    tries = config.LOGIN_MAX_FAILURES + 1
+    real = [login(anon_client, password="wrong password!!").status_code for _ in range(tries)]
+    auth.ip_limiter.reset()  # (only the per-account answers are compared here)
+    unknown = [login(anon_client, email="nobody@example.com", password="wrong password!!").status_code
+               for _ in range(tries)]
+    assert real == unknown == [401] * config.LOGIN_MAX_FAILURES + [429]
+
+
 def test_one_address_trying_many_accounts_is_slowed_down(anon_client):
     for i in range(config.LOGIN_IP_MAX_FAILURES):
         login(anon_client, email=f"guess{i}@example.com")

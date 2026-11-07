@@ -504,6 +504,21 @@ def clean_email(raw: str | None) -> str | None:
     return email
 
 
+# "Visit us at acme dot com", "Book online at ...": the word before "at" is part of the
+# sentence, not a mailbox, so no email is made from it.
+_NOT_A_MAILBOX = {
+    "us", "me", "you", "we", "them", "him", "her", "it", "online", "today", "now", "here",
+    "there", "more", "anytime", "directly", "instantly", "easily", "website", "site", "web",
+    "page", "store", "app", "home", "out",
+}
+
+
+def _spelled_email(m: re.Match) -> str:
+    if m.group(1).lower() in _NOT_A_MAILBOX:
+        return m.group(0)
+    return m.group(1) + "@" + re.sub(r"\s+dot\s+", ".", m.group(2), flags=re.I)
+
+
 def _deobfuscate(text: str) -> str:
     """'jane [at] example [dot] com' / 'jane(at)example.com' -> 'jane@example.com'."""
     # (spaces are limited to {0,3} so a page full of blanks can't make the regex slow)
@@ -512,7 +527,7 @@ def _deobfuscate(text: str) -> str:
     # "jane at example dot com" (only when at least one " dot " follows, to stay safe)
     text = re.sub(
         r"(?<![\w.+\-])([\w.+\-]{1,64})\s{1,3}at\s{1,3}([\w\-]{1,63}(?:\s{1,3}dot\s{1,3}[\w\-]{1,63}){1,4})\b",
-        lambda m: m.group(1) + "@" + re.sub(r"\s+dot\s+", ".", m.group(2), flags=re.I),
+        _spelled_email,
         text,
         flags=re.I,
     )

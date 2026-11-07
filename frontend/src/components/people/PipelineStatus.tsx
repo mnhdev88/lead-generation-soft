@@ -54,7 +54,11 @@ function stepsFor(search: Job, crawl: Job | null, emails: Job | null): Step[] {
   };
 
   const wantsEmails = search.params.find_emails === true;
-  const emailLater: StepState = !wantsEmails || nothingToDo || crawl?.status === "failed" ? "skipped" : "waiting";
+  // The crawl queues the email check in the same step that marks it done: a finished crawl
+  // without one found no emails or people to check, so none is coming.
+  const noEmailsToCheck = crawl?.status === "done" && !emails;
+  const emailLater: StepState =
+    !wantsEmails || nothingToDo || crawl?.status === "failed" || noEmailsToCheck ? "skipped" : "waiting";
   const emailStep: Step = {
     label: "Find & verify emails",
     state: stateOf(emails, emailLater),
@@ -66,9 +70,11 @@ function stepsFor(search: Job, crawl: Job | null, emails: Job | null): Step[] {
           : (emails.progress_message ?? "Waiting…")
       : !wantsEmails && !nothingToDo
         ? "Not requested for this search"
-        : emailLater === "skipped"
-          ? "Skipped"
-          : "Starts after the crawl",
+        : noEmailsToCheck && wantsEmails
+          ? "No emails or people found to check"
+          : emailLater === "skipped"
+            ? "Skipped"
+            : "Starts after the crawl",
     processed: emails?.processed,
     total: emails?.total,
   };

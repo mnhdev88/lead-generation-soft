@@ -36,7 +36,7 @@ import re
 from datetime import datetime, timezone
 
 from .models import Company
-from .utils import SHARED_DOMAINS, normalize_url, own_domain
+from .utils import is_shared_platform, normalize_url, own_domain
 
 OFFERS = ("website", "seo", "software", "marketing")
 OFFER_LABELS = {"website": "Website", "seo": "SEO", "software": "Software", "marketing": "Marketing"}
@@ -248,8 +248,7 @@ def is_platform_page(domain: str | None) -> bool:
     """True for a Facebook / Yelp / Linktree ... page (also m.facebook.com): its HTML and
     speed are the platform's, not the business's. Free builder sites (joes.wixsite.com)
     are the business's own pages: False."""
-    host = (domain or "").lower()
-    return bool(host) and any(host == d or host.endswith("." + d) for d in SHARED_DOMAINS)
+    return is_shared_platform(domain)
 
 
 def _has_own_site(domain: str | None) -> bool:
@@ -376,7 +375,7 @@ def _website_points(company: Company, signals: dict, speed: dict, review: dict) 
         # Only Google's listing proves it: OpenStreetMap often just hasn't recorded the website
         # (e.g. MOD Pizza), so an OpenStreetMap-only lead without one gets no points here.
         points.append(("No website", WEBSITE_NONE))
-    elif not _has_own_site(domain):
+    elif company.website and not _has_own_site(domain):
         points.append(("Only a Facebook / free page, no own website", WEBSITE_SHARED_PAGE))
     if signals.get("https") is False:
         points.append(("No SSL (http only)", WEBSITE_NO_SSL))

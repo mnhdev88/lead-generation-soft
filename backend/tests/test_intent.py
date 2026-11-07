@@ -63,6 +63,17 @@ def test_no_website():
     assert score(c, "website") == 30
 
 
+def test_openstreetmap_lead_without_website_gets_no_website_points():
+    # OpenStreetMap often just hasn't recorded the website: no proof either way.
+    c = company(source="osm", website=None, domain=None)
+    assert reasons(c, "website") == []
+
+
+def test_mobile_facebook_page_is_a_free_page():
+    c = company(website="https://m.facebook.com/acme", domain="m.facebook.com")
+    assert reasons(c, "website") == ["Only a Facebook / free page, no own website +25"]
+
+
 def test_only_a_facebook_page():
     c = company(website="https://facebook.com/acme", domain="facebook.com", socials={"facebook": "x"})
     assert reasons(c, "website") == ["Only a Facebook / free page, no own website +25"]

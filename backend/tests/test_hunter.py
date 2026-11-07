@@ -104,18 +104,23 @@ def test_domain_search_without_key_does_nothing(db, monkeypatch):
     assert usage.get_usage("hunter")[0] == 0
 
 
-@pytest.mark.parametrize("status, body", [
-    (401, {"errors": [{"id": "authentication_failed", "code": 401, "details": "No user found for the API key"}]}),
-    (429, {"errors": [{"id": "too_many_requests", "code": 429, "details": "You have reached your monthly quota"}]}),
-    (500, {"oops": True}),
+@pytest.mark.parametrize("status, body, stop", [
+    (401, {"errors": [{"id": "authentication_failed", "code": 401, "details": "No user found for the API key"}]}, True),
+    (429, {"errors": [{"id": "too_many_requests", "code": 429, "details": "You have reached your monthly quota"}]}, True),
+    (500, {"oops": True}, False),
 ])
-def test_domain_search_http_errors_give_empty_result(hunter_on, status, body):
-    assert hunter.domain_search("acme.com", http_transport=FakeHunter(status, body).transport()) == (None, [])
+def test_domain_search_http_errors_raise(hunter_on, status, body, stop):
+    # A failure must not look like "Hunter knows no one there" (that answer is remembered).
+    with pytest.raises(hunter.HunterError) as e:
+        hunter.domain_search("acme.com", http_transport=FakeHunter(status, body).transport())
+    assert e.value.stop is stop
 
 
-def test_domain_search_network_error_gives_empty_result(hunter_on):
+def test_domain_search_network_error_raises(hunter_on):
     fake = FakeHunter(error=httpx.ConnectError("no internet"))
-    assert hunter.domain_search("acme.com", http_transport=fake.transport()) == (None, [])
+    with pytest.raises(hunter.HunterError) as e:
+        hunter.domain_search("acme.com", http_transport=fake.transport())
+    assert e.value.stop is False
 
 
 def test_domain_search_unknown_domain_and_odd_pattern(hunter_on):

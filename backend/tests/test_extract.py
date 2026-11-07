@@ -117,6 +117,16 @@ def test_obfuscated_emails():
     assert "contact@lahoredental.pk" in emails
 
 
+def test_spelled_out_web_address_is_not_an_email():
+    html = """
+    <p>Visit us at acmeplumbing dot com</p>
+    <p>Find us online at smiledental dot com</p>
+    <p>Book today at smile-dental dot com</p>
+    <p>Or write to hassan at lahoredental dot pk</p>
+    """
+    assert extract_emails(html) == ["hassan@lahoredental.pk"]
+
+
 def test_cloudflare_protected_email():
     assert decode_cfemail("422b2c242d0223212f276f322e372f202b2c256c212d2f") == "info@acme-plumbing.com"
     html = """

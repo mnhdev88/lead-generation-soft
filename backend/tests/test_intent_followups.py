@@ -10,7 +10,7 @@ from app.enrich.extract import detect_intent_signals
 from app.intent import estimate_intent
 from app.schemas import CompanyOut
 from app.sources import google_places as gp
-from tests.test_google_places import FakeGoogle, make_place, usage_calls  # noqa: F401  (fixture)
+from tests.test_google_places import FakeGoogle, api_key, make_place, usage_calls  # noqa: F401  (fixtures)
 from tests.test_intent import NOW, THIS_YEAR, company, reasons, site
 from tests.test_ppp import csv_bytes, google_company, loan, ppp_path  # noqa: F401  (fixture)
 
@@ -19,7 +19,7 @@ NEW_REVIEWS = dict(reviews_count=3, google_reviews=[{"rating": 5, "text": "Great
                                    "oldest_review": (NOW - timedelta(days=100)).isoformat()})
 
 
-def test_google_rank_is_the_position_in_its_own_query(usage_calls):  # noqa: F811
+def test_google_rank_is_the_position_in_its_own_query(api_key, usage_calls):  # noqa: F811
     # Page 1 has a place we can't use (no name) at position 2: positions still count it.
     nameless = {**make_place(2), "displayName": {}}
     fake = FakeGoogle(pages=[[make_place(1), nameless, make_place(3)]])

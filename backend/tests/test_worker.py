@@ -379,6 +379,21 @@ def test_search_rescores_companies(db, monkeypatch):
     assert rescored == ["A"]
 
 
+def test_search_with_a_new_website_forgets_the_old_crawl(db, monkeypatch):
+    from datetime import datetime, timezone
+
+    old = Company(name="A", source="fake", source_ref="a", website="https://old.pk", domain="old.pk",
+                  enrich_status="done", enriched_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                  website_signals={"employees_stated": 40})
+    db.add(old)
+    db.commit()
+    monkeypatch.setitem(SOURCES, "fake", FakeSource([CompanyResult(name="A", source_ref="a", website="new.pk")]))
+    run_search(db, enrich_flag=False)
+    c = db.get(Company, old.id)
+    assert c.website == "https://new.pk"
+    assert (c.enrich_status, c.enriched_at, c.website_signals) == (None, None, {})
+
+
 def test_recover_rules(db):
     def running(kind, source):
         job = SearchJob(kind=kind, query="q", location="l", source=source, status="running")

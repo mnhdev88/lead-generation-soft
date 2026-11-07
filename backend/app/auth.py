@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, HTTPException, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from . import config
@@ -83,12 +83,13 @@ def password_problem(password: str, email: str = "") -> str | None:
 
 
 class _IpLimiter:
-    """Remembers recent failed logins per address. Restarting the backend forgets them,
-    which is fine: the per-account lock (stored in the database) still applies."""
+    """Remembers recent failed logins per address (or per unknown email). Restarting the
+    backend forgets them, which is fine: the per-account lock (in the database) still applies."""
 
-    def __init__(self):
+    def __init__(self, max_failures=lambda: config.LOGIN_IP_MAX_FAILURES):
         self._fails: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
+        self._max = max_failures
 
     def _recent(self, ip: str, now: float) -> deque[float]:
         window = config.LOGIN_LOCK_MINUTES * 60
@@ -99,11 +100,16 @@ class _IpLimiter:
 
     def blocked(self, ip: str) -> bool:
         with self._lock:
-            return len(self._recent(ip, time.monotonic())) >= config.LOGIN_IP_MAX_FAILURES
+            if ip not in self._fails:
+                return False
+            return len(self._recent(ip, time.monotonic())) >= self._max()
 
     def fail(self, ip: str) -> None:
         with self._lock:
             now = time.monotonic()
+            if len(self._fails) > 10_000:  # forget keys whose failures have all run out
+                for key in [k for k in self._fails if not self._recent(k, now)]:
+                    del self._fails[key]
             self._recent(ip, now).append(now)
 
     def reset(self) -> None:
@@ -112,6 +118,9 @@ class _IpLimiter:
 
 
 ip_limiter = _IpLimiter()
+# Emails without an account "lock" after as many wrong tries as a real account, so the
+# answers never tell an outsider which emails have an account.
+unknown_email_limiter = _IpLimiter(lambda: config.LOGIN_MAX_FAILURES)
 
 
 # ----- logging in and out ----------------------------------------------------------
@@ -135,7 +144,8 @@ def authenticate(session: Session, email: str, password: str, ip: str) -> User:
     user = session.scalar(select(User).where(User.email == email))
     now = utcnow()
 
-    if user and user.locked_until and _aware(user.locked_until) > now:
+    locked = (user.locked_until and _aware(user.locked_until) > now) if user else unknown_email_limiter.blocked(email)
+    if locked:
         verify_password(None, password)  # same timing as a normal attempt
         ip_limiter.fail(ip)
         log.warning("Login refused (account locked): %s from %s", email, ip)
@@ -144,8 +154,13 @@ def authenticate(session: Session, email: str, password: str, ip: str) -> User:
     ok = verify_password(user.password_hash if user else None, password)
     if not ok or not user or not user.is_active:
         ip_limiter.fail(ip)
-        if user and not ok:
-            user.failed_logins += 1
+        if user is None:
+            unknown_email_limiter.fail(email)
+        elif not ok:
+            # Counted by the database, so wrong passwords sent at the same moment all count.
+            session.execute(update(User).where(User.id == user.id)
+                            .values(failed_logins=User.failed_logins + 1))
+            session.refresh(user)
             if user.failed_logins >= config.LOGIN_MAX_FAILURES:
                 user.locked_until = now + timedelta(minutes=config.LOGIN_LOCK_MINUTES)
                 user.failed_logins = 0

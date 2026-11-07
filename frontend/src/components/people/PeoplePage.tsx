@@ -64,16 +64,14 @@ export function PeoplePage() {
 
   const search = jobId === null ? null : (jobs.find((j) => j.id === jobId && j.kind === "search") ?? null);
   const running = pipelineOf(jobs, jobId).some(isActive);
-  // A finished search with "find emails" on may not have queued its next step yet: keep polling fast.
+  // A finished search with "crawl websites" on may not have queued its crawl yet: keep polling fast.
+  // (A finished crawl queues the email check at the same moment, so there is nothing to wait for.)
   const nextStepPending =
     search !== null &&
     search.status === "done" &&
     search.result_count > 0 &&
     search.enrich &&
-    (childJob(jobs, search.id, "enrich") === null ||
-      (search.params.find_emails === true &&
-        childJob(jobs, search.id, "enrich")?.status === "done" &&
-        childJob(jobs, search.id, "emails") === null));
+    childJob(jobs, search.id, "enrich") === null;
   const fast = running || nextStepPending;
 
   useEffect(() => {

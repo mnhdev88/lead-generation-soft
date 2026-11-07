@@ -320,3 +320,34 @@ def test_merge_drops_pagespeed_of_a_replaced_website(db):
     merged = merge_companies(db, keep, drop)
     assert merged.website == "https://smile.example"
     assert merged.pagespeed == {} and merged.pagespeed_checked_at is None  # the back-fill tests the new site
+
+
+def test_merge_drops_crawl_of_a_replaced_website(db):
+    from datetime import datetime, timezone
+
+    crawled = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    # keep's crawl was of its Facebook page; drop has the business's own site, never crawled.
+    keep = company(ref="node/1", phone="+1 512-351-8010", website="https://facebook.com/smile",
+                   domain="facebook.com", enrich_status="done", enriched_at=crawled,
+                   website_signals={"employees_stated": 40})
+    drop = company(source="google", ref="g1", phone="+1 512-351-8010", website="https://smile.example",
+                   domain="smile.example")
+    db.add_all([keep, drop])
+    db.commit()
+    merged = merge_companies(db, keep, drop)
+    assert merged.website == "https://smile.example"
+    assert (merged.enrich_status, merged.enriched_at, merged.website_signals) == (None, None, {})
+
+
+def test_merge_takes_the_crawl_of_the_website_kept(db):
+    from datetime import datetime, timezone
+
+    old, new = datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 9, 1, tzinfo=timezone.utc)
+    keep = company(ref="node/1", phone="+1 512-351-8010", website="https://facebook.com/smile",
+                   domain="facebook.com", enrich_status="done", enriched_at=new, website_signals={"a": 1})
+    drop = company(source="google", ref="g1", phone="+1 512-351-8010", website="https://smile.example",
+                   domain="smile.example", enrich_status="failed", enriched_at=old, website_signals={"b": 2})
+    db.add_all([keep, drop])
+    db.commit()
+    merged = merge_companies(db, keep, drop)
+    assert (merged.enrich_status, merged.website_signals) == ("failed", {"b": 2})

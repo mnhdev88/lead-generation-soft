@@ -40,6 +40,7 @@ from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobRe
 from .people import classify, linkedin
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import apollo, hunter, websearch
+from .providers.hunter import HunterError
 from .scoring import recompute_scores, rescore
 from .sizing import branch_counts, refresh_branch_sizes, size_saved_companies
 from .sources import SOURCES, CompanyResult, SourceError
@@ -181,8 +182,8 @@ def _upsert_company(session, source: str, r: CompanyResult) -> Company:
     for name, value in fields.items():
         setattr(company, name, value)
     if not is_new and company.website != old_website:
-        # The PageSpeed result was for the old website: the idle back-fill tests the new one.
-        company.pagespeed, company.pagespeed_checked_at = {}, None
+        # The crawl and PageSpeed results were for the old website: check the new one.
+        company.forget_website_checks()
     _save_google_profile(company, r)
     apply_company_phone(company)
     _note_email_origin(company, source_emails, "source")
@@ -897,14 +898,19 @@ def run_emails_job(session, job: SearchJob) -> None:
                         and not _hunter_asked_recently(domain)):
                     hunter_domains.add(domain)
                     try:
+                        # Only a real answer is remembered: after a failure we ask again next time.
                         pattern, people = hunter.domain_search(domain)
                         _remember_hunter_lookup(domain, pattern)
                         stats["hunter_used"] += 1
                         stats["people_emails"] += _save_hunter_people(company, people)
                         session.commit()
-                    except UsageLimitError as e:
+                    except UsageLimitError:
                         session.rollback()
-                        hunter_ok, hunter_note = False, str(e)
+                        hunter_ok, hunter_note = False, "monthly limit reached"
+                    except HunterError as e:
+                        session.rollback()
+                        if e.stop:  # every other domain would fail the same way
+                            hunter_ok, hunter_note = False, str(e)
                 # b, d, e: pattern, guesses and verification run in a helper thread.
                 work = _prepare_email_work(company)
             except Exception:
@@ -928,7 +934,7 @@ def run_emails_job(session, job: SearchJob) -> None:
         message += f", {stats['failed']} failed"
     message += "."
     if hunter_note:
-        message += " Hunter.io skipped: monthly limit reached."
+        message += f" Hunter.io skipped: {hunter_note}."
     job.result_count = stats["valid"] + stats["catch_all"]
     job.status = "done"
     job.progress_message = _short(message)

@@ -436,6 +436,32 @@ def test_sender_refused(db):
     assert "SMTP_MAIL_FROM" in results["john@acme.com"].reason
 
 
+@pytest.mark.parametrize("message", [
+    "5.1.8 <verify@my-pc.localdomain>: Sender address rejected: Domain not found",
+    "5.1.7 <verify@my-pc.localdomain>: undeliverable address",
+    "Domain of sender address verify@my-pc.localdomain does not exist",
+    "Sender verify failed",
+])
+def test_sender_refused_at_rcpt_is_not_mailbox_missing(message):
+    # Postfix / Exim often refuse our sender only when we ask about a recipient.
+    assert smtp_mod.classify_reply(550, message) == (smtp_mod.UNCLEAR, smtp_mod.REASON_SENDER)
+
+
+def test_reply_quoting_our_sender_is_about_us():
+    msg = "<verify@my-pc.localdomain>: address does not exist"
+    assert smtp_mod.classify_reply(550, msg)[0] == smtp_mod.REJECTED
+    assert smtp_mod.classify_reply(550, msg, "verify@my-pc.localdomain")[0] == smtp_mod.UNCLEAR
+
+
+def test_sender_refused_at_rcpt_leaves_emails_unknown(db):
+    refused = (550, "5.1.8 Sender address rejected: Domain not found")
+    server = FakeServer(default=refused, probe=refused)
+    results, server, _ = run(["john@acme.com", "jane@acme.com"], server)
+    assert {r.status for r in results.values()} == {"unknown"}
+    assert "SMTP_MAIL_FROM" in results["john@acme.com"].reason
+    assert len(server.sessions[0]) == 1  # stopped after the probe
+
+
 def test_provider_key():
     assert verify_mod.provider_key("acme-com.mail.protection.outlook.com") == "outlook.com"
     assert verify_mod.provider_key("aspmx.l.google.com") == "google.com"
