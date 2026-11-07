@@ -84,6 +84,7 @@ export type Contact = {
   lead_status: LeadStatus;
   score: number | null;
   score_reasons: string[];
+  do_not_contact?: string | null; // why this person is on the do-not-contact list
 };
 
 // What the crawler learned about a company's website (all keys optional).
@@ -424,6 +425,7 @@ export type Company = {
   // (business_kind() there). Missing or null = unknown: then we never say one is "not found".
   business_kind?: BusinessKind | null;
   list_ids: number[];
+  do_not_contact?: string | null; // why it is on the do-not-contact list (shown only on request)
   source: string;
   contacts: Contact[]; // decision-makers / most senior first
 };
@@ -730,4 +732,44 @@ export const api = {
     spreadsheet: string;
     tab_name?: string;
   }) => request<{ url: string; tab_name: string; rows: number }>("/api/export/sheets", post(body)),
+
+  // ----- lead quality: do not contact, bounces -----
+  listDoNotContact: () => request<DoNotContactEntry[]>("/api/quality/do-not-contact"),
+  addDoNotContact: (text: string, reason?: DoNotContactReason) =>
+    request<{ added: number; already: number; invalid: string[] }>("/api/quality/do-not-contact", post({ text, reason })),
+  removeDoNotContact: (id: number) => request<void>(`/api/quality/do-not-contact/${id}`, { method: "DELETE" }),
+  blockCompany: (companyId: number, reason?: DoNotContactReason) =>
+    request<DoNotContactEntry>(`/api/quality/do-not-contact/company/${companyId}`, post({ reason })),
+  unblockCompany: (companyId: number) =>
+    request<void>(`/api/quality/do-not-contact/company/${companyId}`, { method: "DELETE" }),
+  reportBounced: (text: string) => request<BouncedResult>("/api/quality/bounced", post({ text })),
+};
+
+// ----- lead quality -----
+
+export const DO_NOT_CONTACT_REASONS = {
+  client: "Current client",
+  said_no: "Said no",
+  competitor: "Competitor",
+  other: "Other",
+} as const;
+export type DoNotContactReason = keyof typeof DO_NOT_CONTACT_REASONS;
+
+export type DoNotContactEntry = {
+  id: number;
+  kind: "email" | "domain" | "company";
+  value: string;
+  company_id: number | null;
+  label: string | null;
+  reason: string | null;
+  created_at: string;
+  matches: number; // businesses / people it hides right now
+};
+
+export type BouncedResult = {
+  emails: number;
+  companies: number;
+  people: number;
+  patterns_weakened: number; // domains whose email pattern is now trusted less
+  invalid: string[];
 };

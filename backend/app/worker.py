@@ -41,6 +41,7 @@ from .people import classify, linkedin
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import apollo, hunter, websearch
 from .providers.hunter import HunterError
+from .blocklist import company_blocked
 from .scoring import recompute_scores, rescore
 from .sizing import branch_counts, refresh_branch_sizes, size_saved_companies
 from .sources import SOURCES, CompanyResult, SourceError
@@ -496,7 +497,8 @@ def _job_targets(session, job: SearchJob) -> list[Company]:
         )
     else:
         return []
-    return list(session.scalars(stmt.order_by(Company.id)))
+    # Businesses on the do-not-contact list: no crawl, no email check, no paid lookups.
+    return list(session.scalars(stmt.where(~company_blocked()).order_by(Company.id)))
 
 
 async def _crawl_all(session, companies: list[Company], stats: dict, on_progress) -> None:

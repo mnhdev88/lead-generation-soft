@@ -8,6 +8,7 @@ job_results - which companies each search returned
 company_sources - extra source records of a company after duplicates were merged
 email_checks, domains - email verification cache and per-domain facts (Step 4)
 lead_lists, list_items, activities - saved lists, notes and status history (Step 6)
+do_not_contact - emails, domains and businesses never to show, contact or export
 api_usage   - paid API calls per month, so we never exceed the free allowance
 users, user_sessions - who may log in, and who is logged in right now
 """
@@ -296,6 +297,23 @@ class Activity(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
     company: Mapped[Company] = relationship(back_populates="activities")
+
+
+class DoNotContact(Base):
+    """Leads never to show, contact or export: current clients, people who said no,
+    competitors... One email, one domain (every business and person using it) or one business."""
+
+    __tablename__ = "do_not_contact"
+    __table_args__ = (UniqueConstraint("kind", "value", name="uq_do_not_contact"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(10))  # email | domain | company
+    # lower-case email or domain; for kind="company" the company id as text
+    value: Mapped[str] = mapped_column(String(254), index=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), index=True)
+    label: Mapped[str | None] = mapped_column(String(300))  # e.g. the company name, for the list
+    reason: Mapped[str | None] = mapped_column(String(100))  # client | said_no | competitor | other text
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class ApiUsage(Base):

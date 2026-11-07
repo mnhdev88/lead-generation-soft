@@ -16,6 +16,7 @@ import {
 import {
   api,
   bandFor,
+  DO_NOT_CONTACT_REASONS,
   HIRING_ROLE_LABEL,
   HOT_INTENT,
   linkedinCompanySearchUrl,
@@ -32,6 +33,7 @@ import {
   type Activity,
   type Company,
   type Contact,
+  type DoNotContactReason,
   type EmailStatus,
   type Job,
   type LeadStatus,
@@ -282,6 +284,21 @@ export function CompanyDrawer({
     }
   }
 
+  // "Bounced" on an email, or "Do not contact" on the business: save, then re-read the panel
+  // and the table (the business may disappear from it).
+  async function qualityAction(action: () => Promise<unknown>, failed: string) {
+    setActionError(null);
+    try {
+      await action();
+      setReload((r) => r + 1);
+      onChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : failed);
+    }
+  }
+  const reportBounced = (email: string) =>
+    qualityAction(() => api.reportBounced(email), "Could not mark the email as bounced");
+
   const canFindPeople = Boolean(company?.website || company?.domain);
   const canVerify = Boolean(company && (company.website || company.domain || company.emails.length > 0));
 
@@ -366,6 +383,11 @@ export function CompanyDrawer({
                 }}
                 size="sm"
               />
+              <DoNotContactButton
+                company={company}
+                onBlock={(reason) => qualityAction(() => api.blockCompany(company.id, reason), "Could not save")}
+                onUnblock={() => qualityAction(() => api.unblockCompany(company.id), "Could not save")}
+              />
             </div>
           )}
         </div>
@@ -388,6 +410,13 @@ export function CompanyDrawer({
 
           <JobProgress running={runningJob} finished={runningJob ? undefined : startedJob} />
 
+          {company?.do_not_contact && (
+            <p role="status" className="rounded-lg bg-[var(--danger-soft)] px-3 py-2 text-sm text-[var(--danger)]">
+              On your do-not-contact list: {company.do_not_contact}. It is left out of searches, exports and
+              background checks.
+            </p>
+          )}
+
           {company && (
             <>
               {company.score_reasons.length > 0 && (
@@ -406,8 +435,8 @@ export function CompanyDrawer({
               )}
               <IntentSection company={company} />
               <SizeSection company={company} />
-              <EmailsSection company={company} />
-              <PeopleSection contacts={company.contacts} companyName={company.name} />
+              <EmailsSection company={company} onBounced={reportBounced} />
+              <PeopleSection contacts={company.contacts} companyName={company.name} onBounced={reportBounced} />
               <GoogleProfileSection company={company} />
               <WebsiteSection company={company} />
               <ActivitySection
@@ -530,7 +559,92 @@ function JobProgress({ running, finished }: { running?: Job; finished?: Job }) {
   );
 }
 
-function EmailsSection({ company: c }: { company: Company }) {
+/** "Bounced": mail to this address came back. Asks once more before saving. */
+function BouncedButton({ email, onBounced }: { email: string; onBounced: (email: string) => void }) {
+  const [asking, setAsking] = useState(false);
+  if (!asking) {
+    return (
+      <button
+        type="button"
+        className="btn-xs"
+        title="Mail you sent to this address came back: mark it invalid everywhere"
+        onClick={() => setAsking(true)}
+      >
+        Bounced
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button type="button" className="btn-xs text-[var(--danger)]" onClick={() => onBounced(email)}>
+        Mark {email} as bounced
+      </button>
+      <button type="button" className="btn-xs" onClick={() => setAsking(false)}>
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+/** Put the business on the do-not-contact list (with a reason), or take it off again. */
+function DoNotContactButton({
+  company,
+  onBlock,
+  onUnblock,
+}: {
+  company: Company;
+  onBlock: (reason: DoNotContactReason) => void;
+  onUnblock: () => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState<DoNotContactReason>("said_no");
+  // Only a block of this business itself can be undone here (a blocked domain or email is
+  // removed on the Quality page).
+  const blockedHere = company.do_not_contact?.startsWith(`${company.name} (`) ?? false;
+  if (company.do_not_contact) {
+    return blockedHere ? (
+      <button type="button" className="btn-secondary text-xs" onClick={onUnblock}>
+        Allow contact again
+      </button>
+    ) : null;
+  }
+  if (!asking) {
+    return (
+      <button
+        type="button"
+        className="btn-secondary text-xs"
+        title="Never show, check or export this business again (current client, said no, competitor…)"
+        onClick={() => setAsking(true)}
+      >
+        Do not contact
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <select
+        aria-label="Why not contact this business"
+        className="input w-auto py-1 text-xs"
+        value={reason}
+        onChange={(e) => setReason(e.target.value as DoNotContactReason)}
+      >
+        {Object.entries(DO_NOT_CONTACT_REASONS).map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <button type="button" className="btn-secondary text-xs text-[var(--danger)]" onClick={() => onBlock(reason)}>
+        Confirm
+      </button>
+      <button type="button" className="btn-xs" onClick={() => setAsking(false)}>
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+function EmailsSection({ company: c, onBounced }: { company: Company; onBounced: (email: string) => void }) {
   // The best email first, then the rest (each address once, ignoring upper/lower case).
   const seen = new Set<string>();
   const emails = [c.email, ...c.emails].filter((e): e is string => {
@@ -545,8 +659,9 @@ function EmailsSection({ company: c }: { company: Company }) {
       ) : (
         <ul className="space-y-1 text-sm">
           {emails.map((e) => (
-            <li key={e}>
+            <li key={e} className="flex flex-wrap items-center gap-2">
               <EmailLine email={e} status={emailStatusOf(c, e)} />
+              {emailStatusOf(c, e) !== "invalid" && <BouncedButton email={e} onBounced={onBounced} />}
             </li>
           ))}
         </ul>
@@ -558,7 +673,15 @@ function EmailsSection({ company: c }: { company: Company }) {
   );
 }
 
-function PeopleSection({ contacts, companyName }: { contacts: Contact[]; companyName: string }) {
+function PeopleSection({
+  contacts,
+  companyName,
+  onBounced,
+}: {
+  contacts: Contact[];
+  companyName: string;
+  onBounced: (email: string) => void;
+}) {
   const team = sortTeam(contacts);
   return (
     <Section title="People" count={team.length}>
@@ -580,6 +703,7 @@ function PeopleSection({ contacts, companyName }: { contacts: Contact[]; company
               {p.title && <div className="text-xs text-[var(--muted)]">{p.title}</div>}
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                 <ContactEmail contact={p} showDetails />
+                {p.email && p.email_status !== "invalid" && <BouncedButton email={p.email} onBounced={onBounced} />}
                 {p.phone && <Phone phone={p.phone} type={p.phone_type} />}
                 {p.linkedin_url ? (
                   <a href={p.linkedin_url} target="_blank" rel="noreferrer" className="link">

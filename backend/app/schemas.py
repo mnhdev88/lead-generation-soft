@@ -138,6 +138,7 @@ class ContactOut(BaseModel):
     lead_status: str = "new"
     score: int | None = None
     score_reasons: list[str] = []
+    do_not_contact: str | None = None  # why this person is on the do-not-contact list (router fills it)
 
     @field_validator("score_reasons", mode="before")
     @classmethod
@@ -208,6 +209,7 @@ class CompanyOut(BaseModel):
     peer_reviews_median: int | None = None  # typical review count of the same search
     pagespeed: dict = {}  # mobile PageSpeed (app/pagespeed.py), {} = not checked
     list_ids: list[int] = []  # lists this company is in (filled by the router)
+    do_not_contact: str | None = None  # why it is on the do-not-contact list (filled by the router)
     source: str
     contacts: list[ContactOut] = []  # sorted: decision-makers / most senior first
 
@@ -357,6 +359,53 @@ class ListItemsRequest(BaseModel):
 
 class ListItemsResult(BaseModel):
     changed: int  # items added (or removed)
+
+
+# ----- lead quality: do not contact, bounces ------------------------------------------
+
+
+DoNotContactReason = Literal["client", "said_no", "competitor", "other"]
+
+
+class DoNotContactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: Literal["email", "domain", "company"]
+    value: str
+    company_id: int | None
+    label: str | None
+    reason: str | None
+    created_at: UtcDatetime
+    matches: int = 0  # businesses / people it hides right now
+
+
+class DoNotContactAdd(BaseModel):
+    # Emails and domains (or website addresses), one per line or separated by commas.
+    text: str = Field(min_length=1, max_length=200_000)
+    reason: DoNotContactReason | None = None
+
+
+class DoNotContactCompany(BaseModel):
+    reason: DoNotContactReason | None = None
+
+
+class DoNotContactAddResult(BaseModel):
+    added: int
+    already: int  # were on the list already
+    invalid: list[str]  # neither an email nor a domain
+
+
+class BouncedRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=200_000)  # bounced addresses, any separators
+
+
+class BouncedResult(BaseModel):
+    emails: int
+    companies: int
+    people: int
+    patterns_weakened: int  # domains whose email pattern is now trusted less
+    invalid: list[str]
 
 
 # ----- sources, usage, export ----------------------------------------------------

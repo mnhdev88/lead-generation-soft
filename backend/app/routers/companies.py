@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .. import exporting
+from .. import blocklist, exporting
 from ..db import get_session
 from ..models import Activity, Company, Contact, JobResult, ListItem, SearchJob
 from ..people import SENIORITY_RANK
@@ -73,6 +73,7 @@ def filters(
     size_band: SizeBandFilter | None = None,  # solo|small|medium|large, or "unknown" = no estimate
     looking_for: LookingFor | None = None,  # with min_intent: which service's intent score
     min_intent: ScoreFilter = None,  # intent score of looking_for (best service for none / "any") >= this
+    include_blocked: bool = False,  # also show businesses on the do-not-contact list
 ) -> Select:
     """Shared query filters for the list and export endpoints (and the Google Sheets
     export, which calls it as a plain function: filters(job_id=4, has_email=True))."""
@@ -115,6 +116,8 @@ def filters(
     column = intent_column(looking_for)  # also checks looking_for
     if min_intent is not None:
         stmt = stmt.where(column >= min_intent)
+    if not include_blocked:
+        stmt = stmt.where(~blocklist.company_blocked())
     return stmt
 
 
@@ -157,11 +160,17 @@ def _to_out(session: Session, companies: list[Company]) -> list[CompanyOut]:
             select(ListItem.company_id, ListItem.list_id).where(ListItem.company_id.in_(ids)).order_by(ListItem.list_id)
         ):
             lists.setdefault(company_id, []).append(list_id)
+    blocked = blocklist.Matcher(session)
     out = []
     for c in companies:
         item = CompanyOut.model_validate(c)
         item.contacts = sorted(item.contacts, key=_contact_order)
         item.list_ids = lists.get(c.id, [])
+        if blocked:
+            item.do_not_contact = blocked.company(c)
+            by_id = {p.id: p for p in c.contacts}
+            for person in item.contacts:
+                person.do_not_contact = blocked.contact(by_id[person.id], c)
         out.append(item)
     return out
 

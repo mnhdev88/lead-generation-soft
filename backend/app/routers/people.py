@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, String, case, func, literal, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from .. import exporting
+from .. import blocklist, exporting
 from ..db import get_session
 from ..models import Activity, Company, Contact, JobResult, ListItem
 from ..people import SENIORITY_RANK
@@ -51,6 +51,7 @@ def people_filters(
     city: str | None = None,
     category: str | None = None,
     min_score: int | None = None,
+    include_blocked: bool = False,  # also show people on the do-not-contact list
 ) -> Select:
     """Shared filters for the people list, exports and the Google Sheets export.
     Also usable as a plain function: people_filters(job_id=4, has_email=True)."""
@@ -95,6 +96,8 @@ def people_filters(
         stmt = stmt.where(Company.category.ilike(f"%{_escape_like(category.strip())}%", escape="\\"))
     if min_score is not None:
         stmt = stmt.where(Contact.score >= min_score)
+    if not include_blocked:
+        stmt = stmt.where(~blocklist.contact_blocked())
     return stmt
 
 
@@ -121,10 +124,13 @@ def _to_people(session: Session, contacts: list[Contact]) -> list[PersonOut]:
             select(ListItem.contact_id, ListItem.list_id).where(ListItem.contact_id.in_(ids)).order_by(ListItem.list_id)
         ):
             lists.setdefault(contact_id, []).append(list_id)
+    blocked = blocklist.Matcher(session)
     people = []
     for c in contacts:
         person = PersonOut.model_validate(c)
         person.list_ids = lists.get(c.id, [])
+        if blocked:
+            person.do_not_contact = blocked.contact(c, c.company)
         people.append(person)
     return people
 

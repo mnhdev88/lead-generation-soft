@@ -71,6 +71,9 @@ REASON_MAYBE_CATCH_ALL = "Mail server accepted it, but may accept every address"
 REASON_DISPOSABLE = "Disposable (throw-away) email address"
 REASON_UNCHECKABLE = "Yahoo/AOL accept every address, so the mailbox can't be checked"
 REASON_MS_UNSURE = "Microsoft 365 rejected it; the mailbox probably doesn't exist"
+# You reported that mail to this address bounced (app/blocklist.py): it stays invalid,
+# even when checked again with force.
+REASON_BOUNCED = "Bounced when you emailed it"
 REASON_PORT25 = "SMTP check paused: port 25 seems blocked on this network"
 
 # "unknown" because of OUR side (network, block, pause): not reused from the cache, so
@@ -334,6 +337,21 @@ def _load_cached(emails: list[str], use_smtp: bool) -> dict[str, CheckResult]:
     return found
 
 
+def _load_bounced(emails: list[str]) -> dict[str, CheckResult]:
+    """Addresses you reported as bounced: invalid, whatever a mail server says today."""
+    found = {}
+    with SessionLocal() as session:
+        for chunk in _chunks(emails, 500):
+            for row in session.scalars(select(EmailCheck).where(
+                EmailCheck.email.in_(chunk), EmailCheck.reason == REASON_BOUNCED
+            )):
+                found[row.email] = CheckResult(
+                    row.email, "invalid", REASON_BOUNCED, bool(row.is_role), bool(row.is_free),
+                    bool(row.is_disposable), row.mx_found, row.smtp_code,
+                )
+    return found
+
+
 def _load_domain_facts(domains: list[str], force: bool) -> dict[str, _DomainFacts]:
     now = datetime.now(timezone.utc)
     max_age = timedelta(days=config.EMAIL_CHECK_MAX_AGE_DAYS)
@@ -418,7 +436,10 @@ def verify_emails(
         else:
             wanted[normalized].append(raw)
 
-    known = {} if force else _load_cached(list(wanted), use_smtp)
+    known = _load_bounced(list(wanted))
+    if not force:
+        rest = [e for e in wanted if e not in known]
+        known.update(_load_cached(rest, use_smtp) if rest else {})
     by_domain: dict[str, list[str]] = defaultdict(list)
     for email in wanted:
         if email not in known:

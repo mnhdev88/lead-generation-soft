@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/", label: "Search", hint: "Find local businesses" },
   { href: "/people", label: "People", hint: "Find decision-makers and their emails" },
   { href: "/lists", label: "Lists", hint: "Your saved lead lists" },
+  { href: "/quality", label: "Quality", hint: "Bounced emails, do-not-contact list, what wins" },
 ] as const;
 const ADMIN_LINKS = [{ href: "/users", label: "Users", hint: "Who can log in" }] as const;
 

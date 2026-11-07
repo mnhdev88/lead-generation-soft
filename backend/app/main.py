@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from .auth import current_user
 from .config import API_DOCS, FRONTEND_ORIGINS
 from .db import init_db
-from .routers import auth, companies, emails, export, jobs, lists, people, usage, users
+from .routers import auth, companies, emails, export, jobs, lists, people, quality, usage, users
 from .worker import start_worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -70,7 +70,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(users.router)  # admins only (checked per endpoint)
 logged_in = [Depends(current_user)]
-for module in (jobs, companies, usage, people, lists, export, emails):
+for module in (jobs, companies, usage, people, lists, export, emails, quality):
     app.include_router(module.router, dependencies=logged_in)
 
 
