@@ -11,6 +11,7 @@ Company score
     Rating >= 4.5 with 50+ reviews +10 (rating >= 4.0 +5)
     Website-sales opportunities: no website +10, no SSL +8, outdated copyright +5, no contact form +3
     Not operating (closed) -30
+    Chain or franchise location -10: decisions are usually made at head office
     Still active: a Google review in the last 3 months +5
     Gone quiet: no Google review in 18+ months (and 5+ reviews in all) -10: may be winding down
     Status Lost / Not interested -> score 0
@@ -66,6 +67,7 @@ COMPANY_OLD_COPYRIGHT = 5
 COMPANY_NO_CONTACT_FORM = 3
 COMPANY_NOT_OPERATING = -30
 COMPANY_ACTIVE = 5
+COMPANY_CHAIN = -10
 COMPANY_QUIET = -10
 ACTIVE_DAYS = 90  # newest Google review at most this old = still active
 QUIET_DAYS = 548  # newest review older than this (18 months) = gone quiet
@@ -215,6 +217,8 @@ def score_company(company: Company) -> tuple[int, list[str]]:
         points.append((label, COMPANY_NOT_OPERATING))
     else:
         points += _activity_points(company)
+    if company.chain:
+        points.append((f"Chain or franchise location ({company.chain.lower()})", COMPANY_CHAIN))
 
     return _finish(points, company.lead_status)
 
@@ -276,10 +280,10 @@ def rescore(company: Company, branches: int | None = None) -> None:
     (app/sizing.py) and its buying intent (app/intent.py, which reads the size).
     branches: the company's branches, when already counted for a whole batch
     (sizing.branch_counts); None = count them now. The caller commits."""
+    apply_size(company, branches)  # first: the score reads company.chain
     company.score, company.score_reasons = score_company(company)
     for contact in company.contacts or []:
         contact.score, contact.score_reasons = score_contact(contact, company)
-    apply_size(company, branches)
     apply_intent(company)  # pure: no extra queries
 
 

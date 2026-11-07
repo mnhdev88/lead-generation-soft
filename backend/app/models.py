@@ -107,6 +107,9 @@ class Company(Base):
     size_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     founded_year: Mapped[int | None] = mapped_column(Integer)
     locations_count: Mapped[int | None] = mapped_column(Integer)  # branches (website + same-website companies)
+    # Why it looks like a chain or franchise location (decisions often made at head office),
+    # None = it doesn't (app/sizing.py chain_reason)
+    chain: Mapped[str | None] = mapped_column(String(200))
     # Matching US PPP loan (app/ppp.py), e.g. {"jobs": 14, "date_approved": "2021-02-03",
     # "name": "SMILE DENTAL PLLC", "match": "name + zip", ...}; {} = checked, none found
     ppp: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))

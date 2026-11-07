@@ -489,6 +489,14 @@ function CompanySubtitle({ company: c }: { company: Company }) {
           </span>
         )}
         {closed && <span className="badge badge-danger">{c.business_status!.toLowerCase().replaceAll("_", " ")}</span>}
+        {c.chain && (
+          <span
+            className="badge badge-warn"
+            title={`${c.chain}. Marketing, website and software are usually decided at head office, not by the local manager.`}
+          >
+            Chain / franchise
+          </span>
+        )}
       </div>
       {c.address && <div>{c.address}</div>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">

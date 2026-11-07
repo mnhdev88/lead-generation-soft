@@ -311,6 +311,19 @@ def branch_counts(session: Session, companies: list[Company]) -> dict[int, int]:
     return counts
 
 
+def chain_reason(company: Company, branches: int | None) -> str | None:
+    """Why this looks like a chain or franchise location, or None. Its marketing, website
+    and software are usually decided at head office, not by the local manager."""
+    from .ppp import _is_chain, name_key  # here: ppp imports modules that import this one
+
+    if _is_chain(name_key(company.name).split()):
+        return "Known chain or franchise brand"
+    if branches and branches > CHAIN_BRANCHES:
+        more = "+" if branches >= MAX_BRANCHES else ""
+        return f"{branches + 1}{more} saved listings share its website"
+    return None
+
+
 def apply_size(company: Company, branches: int | None = None) -> None:
     """Save the size estimate on the company (the caller commits). Called by
     scoring.rescore, so every place that rescores a company also refreshes its size.
@@ -323,6 +336,7 @@ def apply_size(company: Company, branches: int | None = None) -> None:
     company.employees_source, company.size_confidence = est.employees_source, est.confidence
     company.size_reasons = est.reasons
     company.founded_year, company.locations_count = est.founded_year, est.locations_count
+    company.chain = chain_reason(company, branches)
 
 
 def size_saved_companies(session: Session, limit: int | None = None) -> int:

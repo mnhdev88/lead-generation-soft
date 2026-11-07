@@ -196,6 +196,7 @@ class CompanyOut(BaseModel):
     size_reasons: list[str] = []
     founded_year: int | None = None
     locations_count: int | None = None
+    chain: str | None = None  # why it looks like a chain / franchise location (app/sizing.py)
     ppp: dict = {}  # matching US PPP loan (app/ppp.py), {} = none found / not checked
     # Buying intent per service (app/intent.py): {"website": {"score": 65, "reasons": [...]}, ...}
     intent: dict = {}

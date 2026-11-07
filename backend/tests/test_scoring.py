@@ -175,3 +175,16 @@ def test_activity_from_the_newest_google_review():
     assert reasons(700, reviews=2) == []  # just a small business
     c = company(business_status="CLOSED_PERMANENTLY", review_signals={"newest_review": now.isoformat()})
     assert not any("Active" in r for r in score_company(c)[1])
+
+
+def test_chain_or_franchise_location_scores_lower():
+    c = company(name="Great Clips")
+    rescore(c, branches=0)
+    assert c.chain == "Known chain or franchise brand"
+    assert "Chain or franchise location (known chain or franchise brand) -10" in c.score_reasons
+    c = company(name="Smile Dental", website="https://smile.example", domain="smile.example")
+    rescore(c, branches=7)
+    assert c.chain == "8 saved listings share its website"
+    c = company(name="Smile Dental")
+    rescore(c, branches=1)
+    assert c.chain is None and not any("Chain" in r for r in c.score_reasons)

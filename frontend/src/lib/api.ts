@@ -412,6 +412,7 @@ export type Company = {
   size_reasons: string[]; // why we think it is this size
   founded_year: number | null;
   locations_count: number | null;
+  chain?: string | null; // why it looks like a chain / franchise location (decided at head office)
   ppp: PppMatch;
   // Buying intent per offer, and the offer they most likely need.
   intent: Intent; // {} = not worked out yet
