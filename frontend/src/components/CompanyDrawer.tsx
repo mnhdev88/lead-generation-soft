@@ -544,6 +544,11 @@ function CompanySubtitle({ company: c }: { company: Company }) {
       {c.address && <div>{c.address}</div>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
         {c.phone && <Phone phone={c.phone} type={c.phone_type} />}
+        {c.phone && c.phone_lookup?.carrier && (
+          <span className="text-xs" title="Line type confirmed with the phone carrier (Twilio Lookup)">
+            {c.phone_lookup.carrier}
+          </span>
+        )}
         {c.website && (
           <a href={c.website} target="_blank" rel="noreferrer" className="link break-all">
             {c.domain ?? c.website} ↗

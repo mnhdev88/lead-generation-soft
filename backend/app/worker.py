@@ -39,7 +39,7 @@ from .intent import apply_intent
 from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from .people import classify, linkedin
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
-from .providers import apollo, hunter, registry, websearch
+from .providers import apollo, hunter, phone_lookup, registry, websearch
 from .providers.hunter import HunterError
 from .blocklist import company_blocked
 from .scoring import recompute_scores, rescore
@@ -889,6 +889,9 @@ def run_emails_job(session, job: SearchJob) -> None:
     hunter_note = None  # e.g. the monthly limit message
     hunter_ok = use_hunter and hunter.available()
     hunter_domains: set[str] = set()  # asked in this job (branches of a chain often share a domain)
+    phones_ok = phone_lookup.available()
+    phone_note = None
+    stats["phones"] = 0
 
     def finish_company(company_id: int, findings: _EmailFindings) -> None:
         try:
@@ -915,6 +918,20 @@ def run_emails_job(session, job: SearchJob) -> None:
         futures = {}
         for company in companies:
             try:
+                # Mobile or landline? (US / Canadian numbers the phone library can't place)
+                if phones_ok and phone_lookup.needs_lookup(company.phone_e164, company.phone_type) \
+                        and (company.phone_lookup or {}).get("e164") != company.phone_e164:
+                    try:
+                        answer = phone_lookup.line_type(company.phone_e164)
+                        company.phone_lookup = {"e164": company.phone_e164, "type": answer.type,
+                                                "carrier": answer.carrier, "checked_at": _now().isoformat()}
+                        if answer.type:
+                            company.phone_type = answer.type
+                        stats["phones"] += 1
+                        session.commit()
+                    except (UsageLimitError, SourceError) as e:
+                        session.rollback()
+                        phones_ok, phone_note = False, str(e)
                 # c. Hunter.io as a backup when we have nothing for this company.
                 # Never twice for one domain (not even with force, which means "re-verify").
                 domain = _company_domain(company)
@@ -957,8 +974,12 @@ def run_emails_job(session, job: SearchJob) -> None:
     if stats["failed"]:
         message += f", {stats['failed']} failed"
     message += "."
+    if stats["phones"]:
+        message += f" {stats['phones']} phone numbers checked (mobile or landline)."
     if hunter_note:
         message += f" Hunter.io skipped: {hunter_note}."
+    if phone_note:
+        message += f" Phone check stopped: {phone_note}."
     job.result_count = stats["valid"] + stats["catch_all"]
     job.status = "done"
     job.progress_message = _short(message)

@@ -21,6 +21,7 @@ PROVIDERS: dict[str, int] = {
     "web_search": config.WEB_SEARCH_MONTHLY_LIMIT,  # Brave or Serper searches (finding owners)
     "apollo": config.APOLLO_MONTHLY_LIMIT,  # Apollo.io credits (1 per email revealed)
     "opencorporates": config.OPENCORPORATES_MONTHLY_LIMIT,  # business register requests
+    "twilio_lookup": config.TWILIO_LOOKUP_MONTHLY_LIMIT,  # mobile / landline checks
 }
 
 # Friendly names for error messages.

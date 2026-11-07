@@ -65,6 +65,9 @@ class Company(Base):
     phone_e164: Mapped[str | None] = mapped_column(String(20), index=True)
     # mobile|landline|landline_or_mobile|toll_free|voip|other|invalid, None = don't know
     phone_type: Mapped[str | None] = mapped_column(String(20))
+    # Twilio Lookup's answer for phone_e164 (app/providers/phone_lookup.py), e.g.
+    # {"e164": "+15125550123", "type": "mobile", "carrier": "Verizon Wireless", "checked_at": "..."}
+    phone_lookup: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     email: Mapped[str | None] = mapped_column(String(200))  # best email (from source or crawler)
     emails: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))  # all emails found
     website: Mapped[str | None] = mapped_column(String(500))

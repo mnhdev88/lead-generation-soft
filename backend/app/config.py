@@ -91,6 +91,11 @@ APOLLO_MONTHLY_LIMIT = int(os.getenv("APOLLO_MONTHLY_LIMIT", "50"))  # credits p
 # confirm who owns a business. Two requests per business.
 OPENCORPORATES_API_TOKEN = os.getenv("OPENCORPORATES_API_TOKEN", "").strip()
 OPENCORPORATES_MONTHLY_LIMIT = int(os.getenv("OPENCORPORATES_MONTHLY_LIMIT", "200"))
+# Optional: Twilio Lookup (app/providers/phone_lookup.py) tells US / Canadian mobiles from
+# landlines during the email check (about $0.008 per number, once per number).
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_LOOKUP_MONTHLY_LIMIT = int(os.getenv("TWILIO_LOOKUP_MONTHLY_LIMIT", "500"))
 # "Find owner" skips a business looked up less than this many days ago (saves searches/credits).
 PEOPLE_RECHECK_DAYS = int(os.getenv("PEOPLE_RECHECK_DAYS", "90"))
 # 1 = also spend a second web search per business on its LinkedIn company page. Off by default:

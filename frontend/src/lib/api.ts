@@ -382,6 +382,8 @@ export type Company = {
   category: string | null;
   phone: string | null;
   phone_type: PhoneType | null;
+  // The carrier's answer (Twilio Lookup), {} = not asked
+  phone_lookup?: { e164?: string; type?: PhoneType | null; carrier?: string | null; checked_at?: string };
   email: string | null; // best email
   emails: string[]; // all emails, best first
   email_statuses: Record<string, EmailStatus>; // email -> verification result

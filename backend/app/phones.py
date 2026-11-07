@@ -144,6 +144,10 @@ def apply_company_phone(company) -> None:
     company.phone = info.display if info else None
     company.phone_e164 = info.e164 if info else None
     company.phone_type = info.type if info else None
+    # The carrier's answer (Twilio Lookup) knows better than the number's format.
+    lookup = getattr(company, "phone_lookup", None) or {}
+    if info and info.e164 and lookup.get("e164") == info.e164 and lookup.get("type"):
+        company.phone_type = lookup["type"]
 
 
 def apply_contact_phone(contact, company=None) -> None:

@@ -168,6 +168,7 @@ class CompanyOut(BaseModel):
     category: str | None
     phone: str | None
     phone_type: str | None = None
+    phone_lookup: dict = {}  # the carrier's answer (Twilio Lookup), {} = not asked
     email: str | None
     emails: list[str] = []
     email_statuses: dict[str, str] = {}  # email -> valid|invalid|catch_all|unknown|risky
@@ -230,7 +231,7 @@ class CompanyOut(BaseModel):
         return v or []
 
     @field_validator("socials", "website_signals", "email_statuses", "ppp", "intent", "review_signals",
-                     "pagespeed", mode="before")
+                     "pagespeed", "phone_lookup", mode="before")
     @classmethod
     def _none_to_dict(cls, v):
         return v or {}
