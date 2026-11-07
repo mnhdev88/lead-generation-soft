@@ -11,6 +11,8 @@ Company score
     Rating >= 4.5 with 50+ reviews +10 (rating >= 4.0 +5)
     Website-sales opportunities: no website +10, no SSL +8, outdated copyright +5, no contact form +3
     Not operating (closed) -30
+    Still active: a Google review in the last 3 months +5
+    Gone quiet: no Google review in 18+ months (and 5+ reviews in all) -10: may be winding down
     Status Lost / Not interested -> score 0
 
 Person score
@@ -63,6 +65,11 @@ COMPANY_NO_SSL = 8
 COMPANY_OLD_COPYRIGHT = 5
 COMPANY_NO_CONTACT_FORM = 3
 COMPANY_NOT_OPERATING = -30
+COMPANY_ACTIVE = 5
+COMPANY_QUIET = -10
+ACTIVE_DAYS = 90  # newest Google review at most this old = still active
+QUIET_DAYS = 548  # newest review older than this (18 months) = gone quiet
+QUIET_MIN_REVIEWS = 5  # (a business with 2 reviews in all is just small, not quiet)
 
 CONTACT_EMAIL_POINTS = {"valid": 40, "catch_all": 25, "unverified": 10}
 CONTACT_DECISION_MAKER = 30
@@ -206,8 +213,35 @@ def score_company(company: Company) -> tuple[int, list[str]]:
     if company.business_status and company.business_status.upper() != "OPERATIONAL":
         label = company.business_status.replace("_", " ").capitalize()  # "Closed temporarily"
         points.append((label, COMPANY_NOT_OPERATING))
+    else:
+        points += _activity_points(company)
 
     return _finish(points, company.lead_status)
+
+
+def _newest_review(company: Company) -> datetime | None:
+    raw = (company.review_signals or {}).get("newest_review") if isinstance(company.review_signals, dict) else None
+    try:
+        when = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when
+
+
+def _activity_points(company: Company) -> list[tuple[str, int]]:
+    """Is the business still active? From its newest Google review (Google sends 5 reviews,
+    mostly recent ones, so an old newest review means few or no new ones)."""
+    newest = _newest_review(company)
+    if newest is None:
+        return []
+    days = (datetime.now(timezone.utc) - newest).days
+    if days <= ACTIVE_DAYS:
+        return [("Active: a Google review in the last 3 months", COMPANY_ACTIVE)]
+    if days >= QUIET_DAYS and (company.reviews_count or 0) >= QUIET_MIN_REVIEWS:
+        return [(f"Gone quiet: no Google review in {days // 30} months", COMPANY_QUIET)]
+    return []
 
 
 def score_contact(contact: Contact, company: Company | None = None) -> tuple[int, list[str]]:

@@ -158,3 +158,20 @@ def test_published_catch_all_email_is_preferred_over_a_guess():
                 email_statuses={"guess@x.example": "catch_all", "info@x.example": "catch_all"},
                 email_sources={"info@x.example": "website"})
     assert score_company(c)[1] == ["Catch-all email, published by the business +20"]
+
+
+def test_activity_from_the_newest_google_review():
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+
+    def reasons(days_ago, reviews=30):
+        c = company(reviews_count=reviews, review_signals={"newest_review": (now - timedelta(days=days_ago)).isoformat()})
+        return [r for r in score_company(c)[1] if "Active" in r or "quiet" in r]
+
+    assert reasons(10) == ["Active: a Google review in the last 3 months +5"]
+    assert reasons(300) == []
+    assert reasons(700) == ["Gone quiet: no Google review in 23 months -10"]
+    assert reasons(700, reviews=2) == []  # just a small business
+    c = company(business_status="CLOSED_PERMANENTLY", review_signals={"newest_review": now.isoformat()})
+    assert not any("Active" in r for r in score_company(c)[1])
