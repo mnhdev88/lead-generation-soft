@@ -107,6 +107,59 @@ export function ListsPage() {
 type Tab = "companies" | "people";
 
 /** Right side: one list with a Businesses tab and a People tab. */
+/** "12 businesses' emails were checked over 14 days ago": re-check them before exporting. */
+function FreshnessBar({ listId }: { listId: number }) {
+  const [info, setInfo] = useState<{ stale: number; days: number } | null>(null);
+  const [state, setState] = useState<"idle" | "busy" | "started">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listFreshness(listId).then(
+      (r) => !cancelled && setInfo(r),
+      () => undefined, // only a hint: say nothing when it can't be loaded
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [listId]);
+
+  if (!info || info.stale === 0) return null;
+  async function recheck() {
+    setState("busy");
+    setError(null);
+    try {
+      await api.recheckListEmails(listId);
+      setState("started");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start the check");
+      setState("idle");
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-[var(--warn-soft)] px-3 py-2 text-sm">
+      {state === "started" ? (
+        <span role="status">
+          Re-checking the emails in the background (no paid lookups). Progress is shown on the Search page; export
+          once it is done.
+        </span>
+      ) : (
+        <>
+          <span>
+            {info.stale.toLocaleString()} {info.stale === 1 ? "business's emails were" : "businesses' emails were"} last
+            checked over {info.days} days ago (or never). Mailboxes close all the time: check them again before exporting,
+            so fewer emails bounce.
+          </span>
+          <button type="button" className="btn-secondary text-xs" disabled={state === "busy"} onClick={() => void recheck()}>
+            {state === "busy" ? "Starting…" : "Re-check now"}
+          </button>
+        </>
+      )}
+      {error && <span className="text-[var(--danger)]">{error}</span>}
+    </div>
+  );
+}
+
 function ListDetail({ list, onChanged }: { list: LeadList; onChanged: () => void }) {
   // Open the tab that has something in it.
   const [tab, setTab] = useState<Tab>(list.company_count > 0 || list.contact_count === 0 ? "companies" : "people");
@@ -134,6 +187,8 @@ function ListDetail({ list, onChanged }: { list: LeadList; onChanged: () => void
         </h2>
         {list.description && <p className="text-sm text-[var(--muted)]">{list.description}</p>}
       </div>
+
+      <FreshnessBar key={list.id} listId={list.id} />
 
       <div role="tablist" aria-label="What to show" className="flex gap-1 border-b border-[var(--border)]">
         {tabs.map((t) => (

@@ -737,6 +737,10 @@ export const api = {
     tab_name?: string;
   }) => request<{ url: string; tab_name: string; rows: number }>("/api/export/sheets", post(body)),
 
+  listFreshness: (listId: number) =>
+    request<{ stale: number; with_email: number; days: number }>(`/api/lists/${listId}/freshness`),
+  recheckListEmails: (listId: number) => request<Job>(`/api/lists/${listId}/recheck-emails`, post({})),
+
   // ----- lead quality: do not contact, bounces -----
   listDoNotContact: () => request<DoNotContactEntry[]>("/api/quality/do-not-contact"),
   addDoNotContact: (text: string, reason?: DoNotContactReason) =>

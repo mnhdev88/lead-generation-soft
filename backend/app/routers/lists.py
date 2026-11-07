@@ -1,13 +1,16 @@
 """Saved lists of leads ("Miami dentists - call this week"). A list holds companies and/or
 people; deleting a list never deletes the leads themselves."""
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .. import blocklist, config
 from ..db import get_session
-from ..models import Company, Contact, LeadList, ListItem
-from ..schemas import ListCreate, ListItemsRequest, ListItemsResult, ListOut, ListUpdate
+from ..models import Company, Contact, LeadList, ListItem, SearchJob, utcnow
+from ..schemas import JobOut, ListCreate, ListFreshness, ListItemsRequest, ListItemsResult, ListOut, ListUpdate
 
 router = APIRouter(prefix="/api/lists", tags=["lists"])
 
@@ -138,3 +141,58 @@ def remove_items(list_id: int, body: ListItemsRequest, session: Session = Depend
             removed += result.rowcount or 0
     session.commit()
     return ListItemsResult(changed=removed)
+
+
+# ----- fresh emails before exporting ----------------------------------------------------
+
+
+def _companies_with_email(session: Session, list_id: int) -> list[Company]:
+    """The list's businesses and the businesses of its people, that have any email
+    (their own or a person's), leaving out the do-not-contact list."""
+    in_list = select(ListItem.company_id).where(ListItem.list_id == list_id, ListItem.company_id.is_not(None))
+    people_companies = (select(Contact.company_id)
+                        .join(ListItem, ListItem.contact_id == Contact.id)
+                        .where(ListItem.list_id == list_id, Contact.company_id.is_not(None)))
+    has_person_email = select(Contact.company_id).where(Contact.email.is_not(None), Contact.email != "")
+    return list(session.scalars(select(Company).where(
+        or_(Company.id.in_(in_list), Company.id.in_(people_companies)),
+        or_(Company.email.is_not(None), Company.id.in_(has_person_email)),
+        ~blocklist.company_blocked(),
+    ).order_by(Company.id)))
+
+
+def _stale(companies: list[Company]) -> list[Company]:
+    limit = utcnow() - timedelta(days=config.EXPORT_FRESH_DAYS)
+
+    def checked(c: Company):
+        when = c.emails_checked_at
+        return when.replace(tzinfo=limit.tzinfo) if when is not None and when.tzinfo is None else when
+    return [c for c in companies if checked(c) is None or checked(c) < limit]
+
+
+@router.get("/{list_id}/freshness", response_model=ListFreshness)
+def list_freshness(list_id: int, session: Session = Depends(get_session)):
+    _get_list(session, list_id)
+    companies = _companies_with_email(session, list_id)
+    return ListFreshness(stale=len(_stale(companies)), with_email=len(companies), days=config.EXPORT_FRESH_DAYS)
+
+
+@router.post("/{list_id}/recheck-emails", response_model=JobOut, status_code=201)
+def recheck_list_emails(list_id: int, session: Session = Depends(get_session)):
+    """Check again the emails not checked in the last EXPORT_FRESH_DAYS (no paid lookups)."""
+    lead_list = _get_list(session, list_id)
+    stale = _stale(_companies_with_email(session, list_id))
+    if not stale:
+        raise HTTPException(400, f"Every email in this list was checked in the last {config.EXPORT_FRESH_DAYS} days.")
+    job = SearchJob(
+        kind="emails",
+        query=f"Re-check: {lead_list.name}"[:200],
+        location="",
+        source="emails",
+        limit=len(stale),
+        params={"company_ids": [c.id for c in stale], "force": True, "use_hunter": False},
+        progress_message="Waiting in queue...",
+    )
+    session.add(job)
+    session.commit()
+    return job

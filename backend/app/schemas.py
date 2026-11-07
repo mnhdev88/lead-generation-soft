@@ -364,6 +364,14 @@ class ListItemsResult(BaseModel):
     changed: int  # items added (or removed)
 
 
+class ListFreshness(BaseModel):
+    """Emails in a list that should be checked again before exporting it."""
+
+    stale: int  # businesses whose emails were checked more than `days` ago (or never)
+    with_email: int  # businesses in the list (or behind its people) with any email
+    days: int
+
+
 # ----- lead quality: do not contact, bounces ------------------------------------------
 
 

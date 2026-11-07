@@ -124,3 +124,40 @@ def test_doubles_from_older_versions_are_removed_at_startup(db):
                      {"l": lst.id, "c": a.id, "t": "2026-01-01 00:00:00"})
     init_db()
     assert db.query(ListItem).filter_by(list_id=lst.id, company_id=a.id).count() == 1
+
+
+def test_old_email_checks_are_offered_for_a_recheck_before_export(client, db):
+    from datetime import timedelta
+
+    from app.models import LeadList, SearchJob, utcnow
+
+    fresh = Company(name="Fresh", source="osm", source_ref="f", email="a@fresh.com", emails_checked_at=utcnow())
+    old = Company(name="Old", source="osm", source_ref="o", email="a@old.com",
+                  emails_checked_at=utcnow() - timedelta(days=40))
+    never = Company(name="Never", source="osm", source_ref="n")  # no email of its own...
+    no_email = Company(name="NoEmail", source="osm", source_ref="x")
+    db.add_all([fresh, old, never, no_email])
+    db.flush()
+    person = Contact(company_id=never.id, full_name="Ali", email="ali@never.com")  # ...but a person's
+    lst = LeadList(name="L")
+    db.add_all([person, lst])
+    db.flush()
+    db.add_all([ListItem(list_id=lst.id, company_id=c.id) for c in (fresh, old, no_email)]
+               + [ListItem(list_id=lst.id, contact_id=person.id)])
+    db.commit()
+
+    assert client.get(f"/api/lists/{lst.id}/freshness").json() == {"stale": 2, "with_email": 3, "days": 14}
+    r = client.post(f"/api/lists/{lst.id}/recheck-emails")
+    assert r.status_code == 201
+    job = db.get(SearchJob, r.json()["id"])
+    assert job.kind == "emails" and sorted(job.params["company_ids"]) == sorted([old.id, never.id])
+    assert job.params["force"] is True and job.params["use_hunter"] is False
+
+
+def test_nothing_to_recheck(client, db):
+    from app.models import LeadList
+
+    lst = LeadList(name="Empty")
+    db.add(lst)
+    db.commit()
+    assert client.post(f"/api/lists/{lst.id}/recheck-emails").status_code == 400

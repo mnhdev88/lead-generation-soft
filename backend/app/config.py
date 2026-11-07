@@ -63,6 +63,9 @@ SMTP_HELO_HOST = os.getenv("SMTP_HELO_HOST", "").strip()  # empty = this compute
 SMTP_MAIL_FROM = os.getenv("SMTP_MAIL_FROM", "").strip()  # empty = verify@<SMTP_HELO_HOST>
 SMTP_TIMEOUT = float(os.getenv("SMTP_TIMEOUT", "10"))
 EMAIL_CHECK_MAX_AGE_DAYS = int(os.getenv("EMAIL_CHECK_MAX_AGE_DAYS", "30"))  # re-check older results
+# Before exporting a list, emails checked longer ago than this are offered for a re-check
+# (mailboxes close all the time; a bounce hurts your sending reputation).
+EXPORT_FRESH_DAYS = int(os.getenv("EXPORT_FRESH_DAYS", "14"))
 
 # Hunter.io (optional backup for finding emails; free plan = 25 searches/month).
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "").strip()
