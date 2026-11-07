@@ -469,6 +469,13 @@ function Section({ title, count, children }: { title: string; count?: number; ch
   );
 }
 
+const SITE_STATE_LABEL = {
+  parked: "Website parked / for sale",
+  suspended: "Website suspended",
+  placeholder: "Only a placeholder page",
+  dead: "Website address gone",
+} as const;
+
 function CompanySubtitle({ company: c }: { company: Company }) {
   const closed = c.business_status && c.business_status !== "OPERATIONAL";
   return (
@@ -490,6 +497,11 @@ function CompanySubtitle({ company: c }: { company: Company }) {
           <a href={c.website} target="_blank" rel="noreferrer" className="link break-all">
             {c.domain ?? c.website} ↗
           </a>
+        )}
+        {c.website && c.website_signals.site_state && (
+          <span className="badge badge-danger" title="The business has no working website">
+            {SITE_STATE_LABEL[c.website_signals.site_state]}
+          </span>
         )}
         {c.google_maps_url && (
           <a href={c.google_maps_url} target="_blank" rel="noreferrer" className="link">

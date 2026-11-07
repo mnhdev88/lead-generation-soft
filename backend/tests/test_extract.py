@@ -347,6 +347,7 @@ def test_signals_wordpress_page():
         "has_contact_form": False,
         "title": "Our Team | Bright Smile Dental",
         "description": "Family dentistry in Austin, TX.",
+        "site_state": None,  # a real website
     }
 
 

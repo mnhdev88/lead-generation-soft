@@ -459,6 +459,8 @@ def _empty_signals() -> dict:
     # https is None = "unknown": a site we could not reach must not be shown as "No SSL".
     return {"https": None, "platform": None, "copyright_year": None, "has_contact_form": False,
             "title": None, "description": None, "pages_crawled": 0, "final_url": None,
+            # parked | suspended | placeholder | dead | None (extract.site_state)
+            "site_state": None,
             "status_code": None,
             # Size hints the site states about itself (see extract._size_signals_from)
             "employees_stated": None, "employees_from": None, "employees_snippet": None,
@@ -549,8 +551,16 @@ def _careers_key(careers_url: str | None, home_domain: str) -> str | None:
     return url_key(careers_url)
 
 
+# Domain marketplaces a parked domain sends its visitors to.
+_PARKING_DOMAINS = {"sedo.com", "afternic.com", "dan.com", "hugedomains.com", "godaddy.com", "bodis.com",
+                    "parkingcrew.net", "above.com", "domainmarket.com", "undeveloped.com", "atom.com",
+                    "squadhelp.com", "brandbucket.com", "namecheap.com", "porkbun.com", "uniregistry.com"}
+
+
 def _failure(error: str, fetched: _Fetched | None = None) -> WebsiteData:
     signals = _empty_signals()
+    if fetched and fetched.kind == "dns":
+        signals["site_state"] = "dead"  # the address doesn't exist (often: the domain expired)
     if fetched and fetched.status is not None:
         # The server did answer (e.g. with 403), so we know the status and the scheme it used.
         signals["status_code"] = fetched.status
@@ -629,6 +639,12 @@ async def _crawl(url: str, client: httpx.AsyncClient, max_pages: int) -> Website
         return _failure("Blocked by robots.txt", home)
 
     home_domain = registered_domain(urlparse(home.url).hostname)
+    if home_domain in _PARKING_DOMAINS:
+        # Sent to a domain marketplace: the business's domain is parked / for sale.
+        signals = _empty_signals()
+        signals.update({"site_state": "parked", "pages_crawled": 1, "final_url": home.url,
+                        "status_code": home.status, "https": home.url.startswith("https://")})
+        return WebsiteData(ok=True, final_url=home.url, signals=signals)
     # Parsing is CPU work; a thread keeps other crawls running meanwhile.
     pages = [(home.url, await asyncio.to_thread(analyze_page, home.text, home.url))]
     visited = {url_key(start), url_key(home.url)}

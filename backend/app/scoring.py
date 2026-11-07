@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from .intent import apply_intent
+from .intent import BROKEN_SITE_LABELS, apply_intent, broken_site
 from .models import Company, Contact
 from .people import classify
 from .phones import is_usable
@@ -188,8 +188,11 @@ def score_company(company: Company) -> tuple[int, list[str]]:
     # Opportunities for selling websites / marketing. Website facts only count when the
     # crawl succeeded: a blocked or timed-out site tells us nothing about SSL etc.
     signals = company.website_signals or {}
+    broken = broken_site(company)
     if not company.website:
         points.append(("No website", COMPANY_NO_WEBSITE))
+    elif broken:
+        points.append((f"Website {BROKEN_SITE_LABELS[broken]}", COMPANY_NO_WEBSITE))
     elif company.enrich_status == "done":
         points.append(("Website crawled", COMPANY_CRAWLED))
         if signals.get("https") is False:

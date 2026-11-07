@@ -89,6 +89,8 @@ export type Contact = {
 
 // What the crawler learned about a company's website (all keys optional).
 export type WebsiteSignals = {
+  // A website that isn't really one (parked / for sale, suspended, "coming soon", address gone)
+  site_state?: "parked" | "suspended" | "placeholder" | "dead" | null;
   https?: boolean | null;
   platform?: string | null;
   copyright_year?: number | null;

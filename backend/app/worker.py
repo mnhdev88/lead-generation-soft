@@ -472,6 +472,9 @@ def _save_crawl(session, company: Company, data) -> int:
     # SSL/platform, and must not wipe what an earlier crawl found.
     if data.ok and data.signals:
         company.website_signals = dict(data.signals)
+    elif (data.signals or {}).get("site_state") == "dead":
+        # The address doesn't exist any more: keep the old facts, but say so.
+        company.website_signals = {**(company.website_signals or {}), "site_state": "dead"}
     company.enrich_status = "done" if data.ok else "failed"
     company.enrich_error = None if data.ok else (data.error or "Could not crawl the website")[:300]
     company.enriched_at = _now()

@@ -256,12 +256,31 @@ def _has_own_site(domain: str | None) -> bool:
     return own_domain(domain) is not None and not is_platform_page(domain)
 
 
+# Websites that aren't really one (app/enrich/extract.site_state): the business has no
+# working website, which is the strongest sign it needs one.
+BROKEN_SITE_LABELS = {
+    "parked": "parked / for sale",
+    "suspended": "suspended by its host",
+    "placeholder": "only a placeholder page",
+    "dead": "address doesn't exist (domain may have expired)",
+}
+
+
+def broken_site(company: Company) -> str | None:
+    """parked | suspended | placeholder | dead | None, for the company's own website."""
+    signals = company.website_signals if isinstance(company.website_signals, dict) else {}
+    state = signals.get("site_state")
+    return state if company.website and state in BROKEN_SITE_LABELS else None
+
+
 def _site_signals(company: Company) -> dict:
     """Website facts, only when a good crawl found them (and the company has a website
     of its own: a Facebook page's HTML says nothing about the business)."""
     signals = company.website_signals if isinstance(company.website_signals, dict) else {}
     if not company.website or not signals.get("pages_crawled") or is_platform_page(company.domain):
         return {}
+    if broken_site(company):
+        return {}  # a parking or "coming soon" page says nothing about the business
     return signals
 
 
@@ -279,6 +298,8 @@ def _pagespeed(company: Company) -> dict:
     (the result keeps the "url" it tested; older results without one are trusted)."""
     result = company.pagespeed if isinstance(company.pagespeed, dict) else {}
     if not company.website or not result or result.get("error") or is_platform_page(company.domain):
+        return {}
+    if broken_site(company):
         return {}
     tested = result.get("url")
     if isinstance(tested, str) and tested.strip() and not _same_url(tested, company.website):
@@ -371,7 +392,10 @@ def _labels(keys, labels: dict) -> str:
 def _website_points(company: Company, signals: dict, speed: dict, review: dict) -> list[tuple[str, int]]:
     points: list[tuple[str, int]] = []
     domain = (company.domain or "").lower()
-    if not company.website and company.source == "google":
+    broken = broken_site(company)
+    if broken:
+        points.append((f"Website {BROKEN_SITE_LABELS[broken]}: no working website", WEBSITE_NONE))
+    elif not company.website and company.source == "google":
         # Only Google's listing proves it: OpenStreetMap often just hasn't recorded the website
         # (e.g. MOD Pizza), so an OpenStreetMap-only lead without one gets no points here.
         points.append(("No website", WEBSITE_NONE))
@@ -519,7 +543,7 @@ def estimate_intent(company: Company) -> dict[str, dict]:
         points = all_points[offer]
         reasons = [_reason(label, n) for label, n in points]
         cap = 100
-        if offer == "seo" and not company.website:
+        if offer == "seo" and (not company.website or broken_site(company)):
             cap = SEO_NO_WEBSITE_CAP
             if sum(n for _, n in points) > cap:
                 reasons.append(f"No website: SEO at most {cap}")

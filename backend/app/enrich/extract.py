@@ -1299,6 +1299,45 @@ def _copyright_year(text: str) -> int | None:
     return max(years) if years else None
 
 
+# A website that isn't really one: the business has no working website (app/intent.py
+# treats it like "no website"). Short phrases only count on a page with little text, so a
+# real site saying "new menu coming soon" is not called a placeholder.
+_PARKED_HTML = ("sedoparking", "parkingcrew", "bodis.com", "above.com/marketplace", "dan.com/buy-domain",
+                "afternic.com", "hugedomains.com", "domainmarket.com", "undeveloped.com",
+                "parklogic", "window.park", "/park.js", "parking-lander")
+_PARKED_TEXT = ("this domain is for sale", "this domain may be for sale", "buy this domain",
+                "domain is for sale", "the domain name has expired", "this domain has expired",
+                "domain has expired", "this domain is parked", "parked free", "is parked free",
+                "make an offer on this domain", "inquire about this domain", "renew this domain")
+_SUSPENDED_TEXT = ("account suspended", "account has been suspended", "website is suspended",
+                   "site has been suspended", "this site has been suspended", "website has been suspended",
+                   "bandwidth limit exceeded", "this account has been disabled")
+_PLACEHOLDER_ANYWHERE = ("welcome to nginx!", "apache2 ubuntu default page", "apache2 debian default page",
+                         "test page for the apache", "iis windows server", "domain default page",
+                         "web server's default page", "future home of something quite cool",
+                         "this is the default welcome page", "default web site page", "index of /")
+_PLACEHOLDER_SHORT = ("coming soon", "under construction", "launching soon", "website is on its way",
+                      "site is being built", "we'll be back soon", "under maintenance", "maintenance mode")
+_SHORT_PAGE = 1500  # characters of visible text
+
+
+def site_state(text: str, html: str, title: str | None = None) -> str | None:
+    """parked | suspended | placeholder | None (a real website)."""
+    text = " ".join((text or "").lower().split())
+    title = (title or "").lower()
+    head = f"{title} {text[:4000]}"
+    html_lower = (html or "")[:200_000].lower()
+    if any(n in html_lower for n in _PARKED_HTML) or any(n in head for n in _PARKED_TEXT):
+        return "parked"
+    if any(n in head for n in _SUSPENDED_TEXT):
+        return "suspended"
+    if any(n in head for n in _PLACEHOLDER_ANYWHERE):
+        return "placeholder"
+    if len(text) < _SHORT_PAGE and any(n in head for n in _PLACEHOLDER_SHORT):
+        return "placeholder"
+    return None
+
+
 def _signals_from(parser: _PageParser, html: str) -> dict:
     title = " ".join("".join(parser.title_parts).split()) or None
     description = parser.meta.get("description") or parser.meta.get("og:description")
@@ -1309,11 +1348,12 @@ def _signals_from(parser: _PageParser, html: str) -> dict:
         "has_contact_form": parser.has_contact_form,
         "title": title[:300] if title else None,
         "description": description[:500] if description else None,
+        "site_state": site_state(parser.text, html, title),
     }
 
 
 def detect_signals(html: str, page_url: str = "") -> dict:
-    """{"platform", "copyright_year", "has_contact_form", "title", "description"}"""
+    """{"platform", "copyright_year", "has_contact_form", "title", "description", "site_state"}"""
     return _signals_from(_parse(html), html)
 
 

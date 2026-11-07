@@ -43,7 +43,7 @@ def test_analyze_page_includes_intent_keys_but_detect_signals_does_not():
     info = analyze_page('<script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC123"></script>', URL)
     assert INTENT_KEYS <= set(info.signals) and info.signals["has_analytics"] is True
     assert set(detect_signals("<p>x</p>")) == {"platform", "copyright_year", "has_contact_form",
-                                               "title", "description"}
+                                               "title", "description", "site_state"}
 
 
 def test_empty_signals_have_the_intent_keys():

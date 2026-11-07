@@ -305,6 +305,16 @@ def test_dns_failure(monkeypatch):
     data = crawl(make_site({}), "does-not-exist-12345.com")
     assert not data.ok
     assert data.error == "Website address not found"
+    assert data.signals["site_state"] == "dead"
+
+
+def test_redirect_to_a_domain_marketplace_is_a_parked_site():
+    transport = make_site({
+        "https://oldbiz.com/": httpx.Response(302, headers={"location": "https://www.afternic.com/forsale/oldbiz.com"}),
+        "https://www.afternic.com/forsale/oldbiz.com": "<html><body>Buy now</body></html>",
+    })
+    data = crawl(transport, "oldbiz.com")
+    assert data.ok and data.signals["site_state"] == "parked" and data.emails == []
 
 
 def test_large_page_is_capped(monkeypatch):
