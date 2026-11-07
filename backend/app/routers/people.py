@@ -52,6 +52,7 @@ def people_filters(
     category: str | None = None,
     min_score: int | None = None,
     include_blocked: bool = False,  # also show people on the do-not-contact list
+    fit: str | None = None,  # good | poor: their company's fit with your ideal customer
 ) -> Select:
     """Shared filters for the people list, exports and the Google Sheets export.
     Also usable as a plain function: people_filters(job_id=4, has_email=True)."""
@@ -98,6 +99,10 @@ def people_filters(
         stmt = stmt.where(Contact.score >= min_score)
     if not include_blocked:
         stmt = stmt.where(~blocklist.contact_blocked())
+    if fit:
+        if fit not in ("good", "poor"):
+            raise HTTPException(422, "fit must be good or poor")
+        stmt = stmt.where(Company.fit == fit)
     return stmt
 
 

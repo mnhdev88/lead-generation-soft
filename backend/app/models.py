@@ -110,6 +110,9 @@ class Company(Base):
     # Why it looks like a chain or franchise location (decisions often made at head office),
     # None = it doesn't (app/sizing.py chain_reason)
     chain: Mapped[str | None] = mapped_column(String(200))
+    # Your ideal customer (app/fit.py): good | poor | None (no profile set), and why it is poor
+    fit: Mapped[str | None] = mapped_column(String(10), index=True)
+    fit_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     # Matching US PPP loan (app/ppp.py), e.g. {"jobs": 14, "date_approved": "2021-02-03",
     # "name": "SMILE DENTAL PLLC", "match": "name + zip", ...}; {} = checked, none found
     ppp: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
@@ -317,6 +320,17 @@ class DoNotContact(Base):
     label: Mapped[str | None] = mapped_column(String(300))  # e.g. the company name, for the list
     reason: Mapped[str | None] = mapped_column(String(100))  # client | said_no | competitor | other text
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class Setting(Base):
+    """App-wide settings edited in the dashboard, e.g. "ideal_customer" (app/fit.py)."""
+
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(50), unique=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
 class ApiUsage(Base):

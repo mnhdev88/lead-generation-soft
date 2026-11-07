@@ -66,6 +66,10 @@ def init_db() -> None:
     _add_missing_columns()
     _drop_doubled_list_items()
     _add_missing_indexes()
+    from . import fit
+
+    with SessionLocal() as session:
+        fit.reload(session)  # the ideal-customer profile, kept in memory for scoring
 
 
 def get_session():

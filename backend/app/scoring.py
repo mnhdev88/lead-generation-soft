@@ -12,6 +12,7 @@ Company score
     Website-sales opportunities: no website +10, no SSL +8, outdated copyright +5, no contact form +3
     Not operating (closed) -30
     Chain or franchise location -10: decisions are usually made at head office
+    Outside your ideal customer (app/fit.py) -20
     Still active: a Google review in the last 3 months +5
     Gone quiet: no Google review in 18+ months (and 5+ reviews in all) -10: may be winding down
     Status Lost / Not interested -> score 0
@@ -36,6 +37,7 @@ from datetime import datetime, timezone
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from .fit import apply_fit
 from .intent import BROKEN_SITE_LABELS, apply_intent, broken_site
 from .models import Company, Contact
 from .people import classify
@@ -68,6 +70,7 @@ COMPANY_NO_CONTACT_FORM = 3
 COMPANY_NOT_OPERATING = -30
 COMPANY_ACTIVE = 5
 COMPANY_CHAIN = -10
+COMPANY_POOR_FIT = -20
 COMPANY_QUIET = -10
 ACTIVE_DAYS = 90  # newest Google review at most this old = still active
 QUIET_DAYS = 548  # newest review older than this (18 months) = gone quiet
@@ -219,6 +222,8 @@ def score_company(company: Company) -> tuple[int, list[str]]:
         points += _activity_points(company)
     if company.chain:
         points.append((f"Chain or franchise location ({company.chain.lower()})", COMPANY_CHAIN))
+    if company.fit == "poor":
+        points.append((f"Outside your ideal customer: {'; '.join(company.fit_reasons or [])}", COMPANY_POOR_FIT))
 
     return _finish(points, company.lead_status)
 
@@ -280,7 +285,8 @@ def rescore(company: Company, branches: int | None = None) -> None:
     (app/sizing.py) and its buying intent (app/intent.py, which reads the size).
     branches: the company's branches, when already counted for a whole batch
     (sizing.branch_counts); None = count them now. The caller commits."""
-    apply_size(company, branches)  # first: the score reads company.chain
+    apply_size(company, branches)  # first: the score reads company.chain...
+    apply_fit(company)  # ...and the fit (which reads the size)
     company.score, company.score_reasons = score_company(company)
     for contact in company.contacts or []:
         contact.score, contact.score_reasons = score_contact(contact, company)

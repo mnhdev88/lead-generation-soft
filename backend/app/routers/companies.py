@@ -76,6 +76,7 @@ def filters(
     looking_for: LookingFor | None = None,  # with min_intent: which service's intent score
     min_intent: ScoreFilter = None,  # intent score of looking_for (best service for none / "any") >= this
     include_blocked: bool = False,  # also show businesses on the do-not-contact list
+    fit: Literal["good", "poor"] | None = None,  # your ideal customer (app/fit.py)
 ) -> Select:
     """Shared query filters for the list and export endpoints (and the Google Sheets
     export, which calls it as a plain function: filters(job_id=4, has_email=True))."""
@@ -120,6 +121,10 @@ def filters(
         stmt = stmt.where(column >= min_intent)
     if not include_blocked:
         stmt = stmt.where(~blocklist.company_blocked())
+    if fit:
+        if fit not in ("good", "poor"):  # (the Google Sheets export skips FastAPI's checks)
+            raise ValueError("fit must be good or poor")
+        stmt = stmt.where(Company.fit == fit)
     return stmt
 
 

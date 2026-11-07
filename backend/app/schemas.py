@@ -197,6 +197,8 @@ class CompanyOut(BaseModel):
     founded_year: int | None = None
     locations_count: int | None = None
     chain: str | None = None  # why it looks like a chain / franchise location (app/sizing.py)
+    fit: str | None = None  # your ideal customer (app/fit.py): good | poor | None = no profile set
+    fit_reasons: list[str] = []
     ppp: dict = {}  # matching US PPP loan (app/ppp.py), {} = none found / not checked
     # Buying intent per service (app/intent.py): {"website": {"score": 65, "reasons": [...]}, ...}
     intent: dict = {}
@@ -217,7 +219,8 @@ class CompanyOut(BaseModel):
     contacts: list[ContactOut] = []  # sorted: decision-makers / most senior first
 
     # Rows created before a column existed may hold NULL.
-    @field_validator("emails", "contacts", "score_reasons", "size_reasons", "list_ids", mode="before")
+    @field_validator("emails", "contacts", "score_reasons", "size_reasons", "list_ids", "fit_reasons",
+                     mode="before")
     @classmethod
     def _none_to_list(cls, v):
         return v or []
@@ -405,6 +408,23 @@ class DoNotContactAddResult(BaseModel):
     added: int
     already: int  # were on the list already
     invalid: list[str]  # neither an email nor a domain
+
+
+class IdealCustomer(BaseModel):
+    """What a good lead looks like for you (app/fit.py). Empty = anything goes."""
+
+    business_types: list[Annotated[str, Field(max_length=100)]] = Field(default=[], max_length=100)
+    exclude_types: list[Annotated[str, Field(max_length=100)]] = Field(default=[], max_length=100)
+    places: list[Annotated[str, Field(max_length=100)]] = Field(default=[], max_length=100)
+    sizes: list[SizeBand] = []
+    min_rating: float | None = Field(default=None, ge=0, le=5)
+    min_reviews: int | None = Field(default=None, ge=0, le=100_000)
+
+
+class IdealCustomerSaved(BaseModel):
+    profile: IdealCustomer
+    good: int  # businesses that fit now
+    poor: int
 
 
 class BouncedRequest(BaseModel):

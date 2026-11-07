@@ -489,6 +489,16 @@ function CompanySubtitle({ company: c }: { company: Company }) {
           </span>
         )}
         {closed && <span className="badge badge-danger">{c.business_status!.toLowerCase().replaceAll("_", " ")}</span>}
+        {c.fit === "good" && (
+          <span className="badge badge-success" title="Matches your ideal customer (Quality page)">
+            Ideal customer
+          </span>
+        )}
+        {c.fit === "poor" && (
+          <span className="badge badge-warn" title={(c.fit_reasons ?? []).join("\n")}>
+            Poor fit
+          </span>
+        )}
         {c.chain && (
           <span
             className="badge badge-warn"

@@ -1,8 +1,9 @@
 "use client";
 
-import { DoNotContactSection, BouncedSection } from "@/components/quality/DoNotContact";
+import { BouncedSection, DoNotContactSection } from "@/components/quality/DoNotContact";
+import { IdealCustomerSection } from "@/components/quality/IdealCustomer";
 
-/** Tools that keep the leads clean: bounced emails, the do-not-contact list. */
+/** Tools that keep the leads clean: your ideal customer, bounced emails, the do-not-contact list. */
 export function QualityPage() {
   return (
     <main className="mx-auto w-full max-w-[1000px] space-y-6 px-4 py-6">
@@ -12,6 +13,7 @@ export function QualityPage() {
           Teach LeadGen from your results, so the leads it gives you get better over time.
         </p>
       </header>
+      <IdealCustomerSection />
       <BouncedSection />
       <DoNotContactSection />
     </main>

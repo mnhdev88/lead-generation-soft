@@ -413,6 +413,8 @@ export type Company = {
   founded_year: number | null;
   locations_count: number | null;
   chain?: string | null; // why it looks like a chain / franchise location (decided at head office)
+  fit?: "good" | "poor" | null; // your ideal customer (Quality page); null = no profile set
+  fit_reasons?: string[]; // why it is a poor fit
   ppp: PppMatch;
   // Buying intent per offer, and the offer they most likely need.
   intent: Intent; // {} = not worked out yet
@@ -525,6 +527,7 @@ export type CompanyFilters = {
   lead_status?: LeadStatus;
   min_score?: number;
   size_band?: SizeBand | "unknown"; // "unknown" = size not worked out
+  fit?: "good" | "poor"; // your ideal customer (Quality page)
   looking_for?: Offer | "any"; // the offer min_intent and sort "intent" use ("any" = best offer)
   min_intent?: number;
   sort?: "name" | "score" | "rating" | "employees" | "intent"; // default "name"; the others sort high to low
@@ -741,7 +744,10 @@ export const api = {
     request<{ stale: number; with_email: number; days: number }>(`/api/lists/${listId}/freshness`),
   recheckListEmails: (listId: number) => request<Job>(`/api/lists/${listId}/recheck-emails`, post({})),
 
-  // ----- lead quality: do not contact, bounces -----
+  // ----- lead quality: ideal customer, do not contact, bounces -----
+  getIdealCustomer: () => request<IdealCustomerSaved>("/api/quality/ideal-customer"),
+  saveIdealCustomer: (profile: IdealCustomer) =>
+    request<IdealCustomerSaved>("/api/quality/ideal-customer", { method: "PUT", body: JSON.stringify(profile) }),
   listDoNotContact: () => request<DoNotContactEntry[]>("/api/quality/do-not-contact"),
   addDoNotContact: (text: string, reason?: DoNotContactReason) =>
     request<{ added: number; already: number; invalid: string[] }>("/api/quality/do-not-contact", post({ text, reason })),
@@ -754,6 +760,17 @@ export const api = {
 };
 
 // ----- lead quality -----
+
+/** What a good lead looks like for you. Empty parts = anything goes. */
+export type IdealCustomer = {
+  business_types: string[];
+  exclude_types: string[];
+  places: string[];
+  sizes: SizeBand[];
+  min_rating: number | null;
+  min_reviews: number | null;
+};
+export type IdealCustomerSaved = { profile: IdealCustomer; good: number; poor: number };
 
 export const DO_NOT_CONTACT_REASONS = {
   client: "Current client",

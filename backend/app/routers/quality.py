@@ -1,9 +1,9 @@
 """Lead quality tools: the do-not-contact list and bounced emails (app/blocklist.py)."""
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .. import blocklist
+from .. import blocklist, fit
 from ..db import get_session
 from ..models import Company, DoNotContact
 from ..schemas import (
@@ -13,8 +13,10 @@ from ..schemas import (
     DoNotContactAddResult,
     DoNotContactCompany,
     DoNotContactOut,
+    IdealCustomer,
+    IdealCustomerSaved,
 )
-from ..scoring import rescore
+from ..scoring import recompute_scores, rescore
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
 
@@ -85,3 +87,27 @@ def report_bounced(body: BouncedRequest, session: Session = Depends(get_session)
     session.commit()
     return BouncedResult(emails=result.emails, companies=result.companies, people=result.people,
                          patterns_weakened=result.patterns_weakened, invalid=result.invalid[:50])
+
+
+# ----- your ideal customer ------------------------------------------------------------
+
+
+def _fit_counts(session: Session) -> tuple[int, int]:
+    counts = dict(session.execute(select(Company.fit, func.count()).group_by(Company.fit)).all())
+    return counts.get("good", 0), counts.get("poor", 0)
+
+
+@router.get("/ideal-customer", response_model=IdealCustomerSaved)
+def get_ideal_customer(session: Session = Depends(get_session)):
+    good, poor = _fit_counts(session)
+    return IdealCustomerSaved(profile=IdealCustomer(**fit.current()), good=good, poor=poor)
+
+
+@router.put("/ideal-customer", response_model=IdealCustomerSaved)
+def save_ideal_customer(body: IdealCustomer, session: Session = Depends(get_session)):
+    """Save the profile and re-score every business with it."""
+    profile = fit.save(session, body.model_dump())
+    session.commit()
+    recompute_scores(session)
+    good, poor = _fit_counts(session)
+    return IdealCustomerSaved(profile=IdealCustomer(**profile), good=good, poor=poor)

@@ -104,6 +104,7 @@ export function ResultsTable({
   const [crawl, setCrawl] = useState<CrawlFilter>("any");
   const [leadStatus, setLeadStatus] = useState<LeadStatus | "any">("any");
   const [size, setSize] = useState<SizeFilter>("any");
+  const [fit, setFit] = useState<"any" | "good" | "poor">("any");
   const [minScore, setMinScore] = useState(0);
   const [lookingFor, setLookingFor] = useState<LookingFor>("any");
   const [hotOnly, setHotOnly] = useState(false);
@@ -129,6 +130,7 @@ export function ResultsTable({
     enrich_status: crawl === "any" ? undefined : crawl,
     lead_status: leadStatus === "any" ? undefined : leadStatus,
     size_band: size === "any" ? undefined : size,
+    fit: fit === "any" ? undefined : fit,
     min_score: minScore || undefined,
     looking_for: lookingFor === "any" ? undefined : lookingFor,
     min_intent: hotOnly ? HOT_INTENT : undefined,
@@ -305,6 +307,21 @@ export function ResultsTable({
               </option>
             ))}
             <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label
+          className="flex items-center gap-1.5 text-sm"
+          title="Your ideal customer, set on the Quality page"
+        >
+          <span className="text-[var(--muted)]">Fit</span>
+          <select
+            className="input w-auto py-1"
+            value={fit}
+            onChange={(e) => setFit(e.target.value as "any" | "good" | "poor")}
+          >
+            <option value="any">Any</option>
+            <option value="good">Ideal customers</option>
+            <option value="poor">Poor fits</option>
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-sm">
