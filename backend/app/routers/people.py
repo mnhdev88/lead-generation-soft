@@ -53,10 +53,13 @@ def people_filters(
     min_score: int | None = None,
     include_blocked: bool = False,  # also show people on the do-not-contact list
     fit: str | None = None,  # good | poor: their company's fit with your ideal customer
+    exported: bool | None = None,  # False = never exported (CSV / Excel / Google Sheets)
 ) -> Select:
     """Shared filters for the people list, exports and the Google Sheets export.
     Also usable as a plain function: people_filters(job_id=4, has_email=True)."""
     stmt = select(Contact).outerjoin(Company, Contact.company_id == Company.id)
+    if exported is not None:
+        stmt = stmt.where(Contact.exported_at.is_not(None) if exported else Contact.exported_at.is_(None))
     if job_id is not None:
         stmt = stmt.where(Contact.company_id.in_(select(JobResult.company_id).where(JobResult.job_id == job_id)))
     if list_id is not None:
@@ -163,7 +166,9 @@ def export_people_csv(
     sort: str = Query("seniority", pattern="^(name|score|seniority)$"),
     session: Session = Depends(get_session),
 ):
-    headers, rows = exporting.people_table(session.scalars(_ordered(stmt, sort)))
+    people = exporting.one_per_email(session.scalars(_ordered(stmt, sort)))
+    headers, rows = exporting.people_table(people)
+    exporting.mark_exported(session, people)
     return exporting.csv_response(headers, rows, "people.csv")
 
 
@@ -173,7 +178,9 @@ def export_people_xlsx(
     sort: str = Query("seniority", pattern="^(name|score|seniority)$"),
     session: Session = Depends(get_session),
 ):
-    headers, rows = exporting.people_table(session.scalars(_ordered(stmt, sort)))
+    people = exporting.one_per_email(session.scalars(_ordered(stmt, sort)))
+    headers, rows = exporting.people_table(people)
+    exporting.mark_exported(session, people)
     return exporting.xlsx_response(headers, rows, "people.xlsx")
 
 
@@ -184,7 +191,9 @@ def export_people_custom_xlsx(
     session: Session = Depends(get_session),
 ):
     """The same people, in the columns of our CRM import template."""
-    headers, rows = exporting.custom_people_table(session.scalars(_ordered(stmt, sort)))
+    people = exporting.one_per_email(session.scalars(_ordered(stmt, sort)))
+    headers, rows = exporting.custom_people_table(people)
+    exporting.mark_exported(session, people)
     return exporting.xlsx_response(headers, rows, "people-custom.xlsx")
 
 

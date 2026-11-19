@@ -146,7 +146,7 @@ def test_bulk_status(client, db, people):
             "contact_ids": [people["ali"].id, people["zara"].id], "lead_status": "contacted"}
     r = client.post("/api/status/bulk", json=body)
     # smile + law companies, ali (zara already "contacted")
-    assert r.status_code == 200 and r.json() == {"changed": 3}
+    assert r.status_code == 200 and r.json()["changed"] == 3
     db.expire_all()
     assert db.get(Company, people["smile"].id).lead_status == "contacted"
     assert db.get(Company, people["smile"].id).score is not None  # rescored

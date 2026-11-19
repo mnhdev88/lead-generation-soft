@@ -1,11 +1,12 @@
-"""Lead quality tools: the do-not-contact list and bounced emails (app/blocklist.py)."""
+"""Lead quality tools: the do-not-contact list and bounced emails (app/blocklist.py),
+and merging businesses / people saved twice (app/dedupe.py)."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .. import blocklist, fit, insights
+from .. import blocklist, dedupe, fit, insights
 from ..db import get_session
-from ..models import Company, DoNotContact
+from ..models import Company, Contact, DoNotContact
 from ..schemas import (
     BouncedRequest,
     BouncedResult,
@@ -13,6 +14,11 @@ from ..schemas import (
     DoNotContactAddResult,
     DoNotContactCompany,
     DoNotContactOut,
+    DuplicateBusiness,
+    DuplicatePeopleGroup,
+    DuplicatePerson,
+    DuplicatesMerged,
+    DuplicatesOut,
     IdealCustomer,
     IdealCustomerSaved,
     InsightsOut,
@@ -126,3 +132,44 @@ def what_wins(session: Session = Depends(get_session)):
         no_reply_days=insights.NO_REPLY_DAYS, min_leads=insights.MIN_LEADS,
         signals=[vars(s) for s in r.signals], by_score=r.by_score,
     )
+
+
+# ----- duplicates -------------------------------------------------------------------
+
+DUPLICATES_SHOWN = 50  # groups listed on the page (the counts cover all of them)
+
+
+def _person(c) -> DuplicatePerson:
+    return DuplicatePerson(id=c.id, name=c.full_name, email=c.email, title=c.title)
+
+
+@router.get("/duplicates", response_model=DuplicatesOut)
+def list_duplicates(session: Session = Depends(get_session)):
+    """Businesses and people saved twice, as the merge would join them. Changes nothing."""
+    groups = dedupe.find_all_duplicates(session)
+    people = dedupe.find_all_duplicate_people(session)
+    return DuplicatesOut(
+        business_copies=sum(len(g) - 1 for g in groups),
+        people_copies=sum(len(pairs) for _, pairs in people),
+        businesses=[
+            [DuplicateBusiness(id=c.id, name=c.name, source=c.source, phone=c.phone, address=c.address,
+                               website=c.website, reason=reason) for c, reason in group]
+            for group in groups[:DUPLICATES_SHOWN]
+        ],
+        people=[
+            DuplicatePeopleGroup(company_id=company.id, company_name=company.name,
+                                 pairs=[[_person(keep), _person(copy)] for keep, copy in pairs])
+            for company, pairs in people[:DUPLICATES_SHOWN]
+        ],
+    )
+
+
+@router.post("/duplicates/merge", response_model=DuplicatesMerged)
+def merge_duplicates(session: Session = Depends(get_session)):
+    """Merge every business and person saved twice. The older copy stays (with its lists,
+    notes and status); the other copy's facts, people, lists and notes move into it."""
+    people_before = session.scalar(select(func.count(Contact.id)))
+    businesses = dedupe.merge_all_duplicates(session)  # also joins the people both copies had
+    dedupe.merge_all_duplicate_people(session)
+    people = people_before - session.scalar(select(func.count(Contact.id)))
+    return DuplicatesMerged(businesses=businesses, people=people)

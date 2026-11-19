@@ -30,7 +30,7 @@ def test_list_lists_sorted_with_counts(client, db):
     zed = client.post("/api/lists", json={"name": "zed"}).json()
     client.post("/api/lists", json={"name": "Alpha"})
     r = client.post(f"/api/lists/{zed['id']}/items", json={"company_ids": [a.id, b.id], "contact_ids": [p.id]})
-    assert r.json() == {"changed": 3}
+    assert r.json()["changed"] == 3
     lists = client.get("/api/lists").json()
     assert [x["name"] for x in lists] == ["Alpha", "zed"]
     assert (lists[1]["company_count"], lists[1]["contact_count"]) == (2, 1)
@@ -41,12 +41,12 @@ def test_add_items_dedupes_and_ignores_unknown(client, db):
     a, b, p = add_leads(db)
     lid = client.post("/api/lists", json={"name": "L"}).json()["id"]
     r = client.post(f"/api/lists/{lid}/items", json={"company_ids": [a.id, a.id, 999], "contact_ids": [p.id, 888]})
-    assert r.json() == {"changed": 2}
+    assert r.json()["changed"] == 2
     r = client.post(f"/api/lists/{lid}/items", json={"company_ids": [a.id, b.id], "contact_ids": [p.id]})
-    assert r.json() == {"changed": 1}  # only B is new
+    assert r.json()["changed"] == 1  # only B is new
     assert db.query(ListItem).count() == 3
     # Defaults: both id lists optional
-    assert client.post(f"/api/lists/{lid}/items", json={}).json() == {"changed": 0}
+    assert client.post(f"/api/lists/{lid}/items", json={}).json()["changed"] == 0
 
 
 def test_remove_items(client, db):
@@ -54,7 +54,7 @@ def test_remove_items(client, db):
     lid = client.post("/api/lists", json={"name": "L"}).json()["id"]
     client.post(f"/api/lists/{lid}/items", json={"company_ids": [a.id, b.id], "contact_ids": [p.id]})
     r = client.post(f"/api/lists/{lid}/items/remove", json={"company_ids": [a.id, 999], "contact_ids": [p.id]})
-    assert r.json() == {"changed": 2}
+    assert r.json()["changed"] == 2
     assert client.get("/api/lists").json()[0]["company_count"] == 1
 
 

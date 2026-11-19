@@ -138,8 +138,12 @@ export function AddToListButton({
     setBusy(true);
     setError(null);
     try {
-      const { changed } = await api.addToList(list.id, { company_ids: companyIds, contact_ids: contactIds });
-      showFeedback(changed === 0 ? `Already in “${list.name}”` : `Added ${changed} to “${list.name}”`);
+      const { changed, in_other_lists } = await api.addToList(list.id, {
+        company_ids: companyIds,
+        contact_ids: contactIds,
+      });
+      const elsewhere = in_other_lists > 0 ? ` (${in_other_lists} already in another list)` : "";
+      showFeedback(changed === 0 ? `Already in “${list.name}”` : `Added ${changed} to “${list.name}”${elsewhere}`);
       setOpen(false);
       buttonRef.current?.focus();
       onDone?.();

@@ -533,6 +533,7 @@ export type CompanyFilters = {
   fit?: "good" | "poor"; // your ideal customer (Quality page)
   looking_for?: Offer | "any"; // the offer min_intent and sort "intent" use ("any" = best offer)
   min_intent?: number;
+  exported?: boolean; // false = never exported (CSV / Excel / Google Sheets)
   sort?: "name" | "score" | "rating" | "employees" | "intent"; // default "name"; the others sort high to low
 };
 
@@ -550,6 +551,7 @@ export type PeopleFilters = {
   city?: string;
   category?: string;
   min_score?: number;
+  exported?: boolean; // false = never exported (CSV / Excel / Google Sheets)
   sort?: "name" | "score" | "seniority"; // default "seniority" (most senior first)
 };
 
@@ -728,8 +730,12 @@ export const api = {
   updateList: (id: number, body: { name?: string; description?: string | null }) =>
     request<LeadList>(`/api/lists/${id}`, patch(body)),
   deleteList: (id: number) => request<void>(`/api/lists/${id}`, { method: "DELETE" }),
+  // in_other_lists: how many of the added leads were already in another list.
   addToList: (listId: number, items: { company_ids?: number[]; contact_ids?: number[] }) =>
-    request<{ changed: number }>(`/api/lists/${listId}/items`, post({ company_ids: [], contact_ids: [], ...items })),
+    request<{ changed: number; in_other_lists: number }>(
+      `/api/lists/${listId}/items`,
+      post({ company_ids: [], contact_ids: [], ...items }),
+    ),
   removeFromList: (listId: number, items: { company_ids?: number[]; contact_ids?: number[] }) =>
     request<{ changed: number }>(
       `/api/lists/${listId}/items/remove`,
@@ -764,6 +770,27 @@ export const api = {
   unblockCompany: (companyId: number) =>
     request<void>(`/api/quality/do-not-contact/company/${companyId}`, { method: "DELETE" }),
   reportBounced: (text: string) => request<BouncedResult>("/api/quality/bounced", post({ text })),
+  listDuplicates: () => request<Duplicates>("/api/quality/duplicates"),
+  mergeDuplicates: () => request<{ businesses: number; people: number }>("/api/quality/duplicates/merge", post({})),
+};
+
+// ----- duplicates (businesses and people saved twice) -----
+
+export type DuplicateBusiness = {
+  id: number;
+  name: string;
+  source: string | null;
+  phone: string | null;
+  address: string | null;
+  website: string | null;
+  reason: string; // why it is the same as the first of its group; "" for the first
+};
+export type DuplicatePerson = { id: number; name: string | null; email: string | null; title: string | null };
+export type Duplicates = {
+  business_copies: number;
+  people_copies: number;
+  businesses: DuplicateBusiness[][]; // groups, the one that stays first
+  people: { company_id: number; company_name: string; pairs: [DuplicatePerson, DuplicatePerson][] }[];
 };
 
 // ----- lead quality -----

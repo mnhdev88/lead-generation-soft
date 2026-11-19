@@ -7,6 +7,7 @@ import { api, type CompanyFilters, type PeopleFilters, type SheetsStatus } from 
 type Kind = "companies" | "people";
 
 const SHEET_URL_KEY = "leadgen.sheetUrl"; // the last Google Sheet you exported to
+const SKIP_EXPORTED_KEY = "leadgen.skipExported"; // "Skip leads exported before" (remembered)
 
 // localStorage can throw (private windows, blocked storage), so every access is wrapped.
 function loadSavedSheet() {
@@ -24,11 +25,37 @@ function saveSheet(url: string) {
   }
 }
 
-/** "Export ▾": download as CSV / Excel, or send the rows to a Google Sheet. */
-export function ExportMenu({ kind, filters }: { kind: Kind; filters: CompanyFilters | PeopleFilters }) {
+function loadSkipExported() {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(SKIP_EXPORTED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveSkipExported(on: boolean) {
+  try {
+    window.localStorage.setItem(SKIP_EXPORTED_KEY, on ? "1" : "0");
+  } catch {
+    // not important: the box is just unticked next time
+  }
+}
+
+/** "Export ▾": download as CSV / Excel, or send the rows to a Google Sheet.
+ *  Every export is remembered per lead, so "Skip leads exported before" leaves out what went out already. */
+export function ExportMenu({
+  kind,
+  filters: shownFilters,
+}: {
+  kind: Kind;
+  filters: CompanyFilters | PeopleFilters;
+}) {
   const { open, setOpen, rootRef, buttonRef, onRootKeyDown } = usePopover();
   const menuRef = useRef<HTMLDivElement>(null);
   const [sheetsOpen, setSheetsOpen] = useState(false);
+  // (Read on the server too, where it is false; it only shows up once the menu is opened.)
+  const [skipExported, setSkipExported] = useState(loadSkipExported);
+  const filters = skipExported ? { ...shownFilters, exported: false } : shownFilters;
 
   // Close the Sheets dialog if Next.js hides this page during navigation
   // (an open modal dialog would block clicks on the next page).
@@ -95,6 +122,23 @@ export function ExportMenu({ kind, filters }: { kind: Kind; filters: CompanyFilt
           >
             Google Sheets…
           </button>
+          <label className="mt-1 flex cursor-pointer items-start gap-2 border-t border-[var(--border)] px-2 pb-1 pt-2">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={skipExported}
+              onChange={(e) => {
+                setSkipExported(e.target.checked);
+                saveSkipExported(e.target.checked);
+              }}
+            />
+            <span>
+              Skip leads exported before
+              <span className="block text-xs text-[var(--muted)]">
+                Only {kind === "people" ? "people" : "businesses"} that were never in a CSV, Excel or Sheets export
+              </span>
+            </span>
+          </label>
         </div>
       )}
       {sheetsOpen && (

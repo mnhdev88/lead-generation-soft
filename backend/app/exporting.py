@@ -10,7 +10,7 @@ from collections.abc import Iterable
 
 from fastapi.responses import Response, StreamingResponse
 
-from .models import Company, Contact
+from .models import Company, Contact, utcnow
 from .people import SENIORITY_RANK
 from .phones import country_code, parse_phone
 from .ppp import _google_part, us_location
@@ -39,6 +39,29 @@ PEOPLE_HEADERS = [
     "email_confidence", "phone", "linkedin", "company", "company_website", "company_phone", "city",
     "country", "category", "lead_status", "score",
 ]
+
+
+def one_per_email(contacts: Iterable[Contact]) -> list[Contact]:
+    """People in order, leaving out a person whose email an earlier row already has (the
+    same mailbox would get your message twice). People without an email all stay."""
+    seen, result = set(), []
+    for p in contacts:
+        email = (p.email or "").strip().lower()
+        if email and email in seen:
+            continue
+        if email:
+            seen.add(email)
+        result.append(p)
+    return result
+
+
+def mark_exported(session, items: Iterable[Company | Contact]) -> None:
+    """Remember that these leads were exported now (filter "exported" / "Skip leads
+    exported before"). Commits."""
+    now = utcnow()
+    for item in items:
+        item.exported_at = now
+    session.commit()
 
 
 def _yes_no(value) -> str:

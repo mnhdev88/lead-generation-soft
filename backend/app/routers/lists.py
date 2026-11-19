@@ -106,7 +106,7 @@ def delete_list(list_id: int, session: Session = Depends(get_session)):
 def add_items(list_id: int, body: ListItemsRequest, session: Session = Depends(get_session)):
     """Add companies/people. Ones already in the list and unknown ids are skipped."""
     _get_list(session, list_id)
-    added = 0
+    added = in_other_lists = 0
     for column, model, ids in (
         (ListItem.company_id, Company, body.company_ids),
         (ListItem.contact_id, Contact, body.contact_ids),
@@ -116,6 +116,7 @@ def add_items(list_id: int, body: ListItemsRequest, session: Session = Depends(g
             continue
         existing = set(session.scalars(select(model.id).where(model.id.in_(wanted))))
         already = set(session.scalars(select(column).where(ListItem.list_id == list_id, column.in_(wanted))))
+        elsewhere = set(session.scalars(select(column).where(ListItem.list_id != list_id, column.in_(wanted))))
         for item_id in sorted(existing - already):
             item = (ListItem(list_id=list_id, company_id=item_id) if model is Company
                     else ListItem(list_id=list_id, contact_id=item_id))
@@ -125,8 +126,9 @@ def add_items(list_id: int, body: ListItemsRequest, session: Session = Depends(g
             except IntegrityError:
                 continue
             added += 1
+            in_other_lists += item_id in elsewhere
     session.commit()
-    return ListItemsResult(changed=added)
+    return ListItemsResult(changed=added, in_other_lists=in_other_lists)
 
 
 @router.post("/{list_id}/items/remove", response_model=ListItemsResult)

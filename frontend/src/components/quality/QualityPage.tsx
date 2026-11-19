@@ -1,10 +1,11 @@
 "use client";
 
 import { BouncedSection, DoNotContactSection } from "@/components/quality/DoNotContact";
+import { DuplicatesSection } from "@/components/quality/Duplicates";
 import { IdealCustomerSection } from "@/components/quality/IdealCustomer";
 import { WhatWinsSection } from "@/components/quality/WhatWins";
 
-/** Tools that keep the leads clean: your ideal customer, bounced emails, the do-not-contact list. */
+/** Tools that keep the leads clean: your ideal customer, duplicates, bounced emails, the do-not-contact list. */
 export function QualityPage() {
   return (
     <main className="mx-auto w-full max-w-[1000px] space-y-6 px-4 py-6">
@@ -16,6 +17,7 @@ export function QualityPage() {
       </header>
       <WhatWinsSection />
       <IdealCustomerSection />
+      <DuplicatesSection />
       <BouncedSection />
       <DoNotContactSection />
     </main>

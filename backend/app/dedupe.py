@@ -18,7 +18,13 @@ Facts from Google win over OpenStreetMap; empty fields are filled from the other
 The other copy's (source, source_ref) is saved in company_sources, so the next search of
 either source updates the merged company instead of creating the copy again.
 
-Merge the duplicates already in the database:
+When it runs: each search checks every business it saves; a website crawl that finds a phone
+number the business didn't have checks it again (worker._merge_after_crawl).
+
+People: the same person saved twice at one business (app/people/matching.py: same LinkedIn
+profile, email, or first and last name) is merged into the older copy the same way.
+
+Merge the duplicates already in the database (or use Quality page -> Duplicates):
     python -m app.dedupe            show what would be merged
     python -m app.dedupe --apply    merge them
 """
@@ -29,10 +35,11 @@ import unicodedata
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import Activity, Company, CompanySource, Contact, JobResult, ListItem
+from .people.matching import find_same_person
 from .phones import apply_company_phone, is_usable
 from .scoring import rescore
 from .utils import merge_emails, own_domain
@@ -191,12 +198,32 @@ def _move_list_items(session: Session, column, old_id: int, new_id: int) -> None
 
 
 def _find_twin(contacts: list[Contact], c: Contact) -> Contact | None:
-    """The same person among `contacts`: same email or same full name."""
-    email, name = (c.email or "").lower(), (c.full_name or "").strip().lower()
-    for other in contacts:
-        if (email and (other.email or "").lower() == email) or (name and (other.full_name or "").strip().lower() == name):
-            return other
-    return None
+    """The same person among `contacts` (app/people/matching.py)."""
+    return find_same_person(contacts, c.full_name, c.email, c.linkedin_url, exclude=c)
+
+
+def _merge_person(session: Session, twin: Contact, c: Contact) -> None:
+    """Merge person `c` into `twin` (the same person) and delete `c`. Empty fields of twin
+    are filled from c; c's list entries, notes and confirming sources move to twin."""
+    for field in CONTACT_FIELDS:
+        if _empty(getattr(twin, field)) and not _empty(getattr(c, field)):
+            setattr(twin, field, getattr(c, field))
+    if (twin.lead_status or "new") == "new" and (c.lead_status or "new") != "new":
+        twin.lead_status = c.lead_status
+    twin.is_decision_maker = bool(twin.is_decision_maker or c.is_decision_maker)
+    sources = []  # every source that found this person (two or more = confirmed)
+    for source in [twin.source, *(twin.confirmed_by or []), c.source, *(c.confirmed_by or [])]:
+        if source and source not in sources:
+            sources.append(source)
+    twin.confirmed_by = sources  # a new list, so the JSON column is saved
+    session.flush()
+    _move_list_items(session, ListItem.contact_id, c.id, twin.id)
+    for a in session.scalars(select(Activity).where(Activity.contact_id == c.id)):
+        a.contact_id = twin.id
+    if c.company is not None:
+        c.company.contacts.remove(c)  # delete-orphan: the row is deleted on flush
+    else:
+        session.delete(c)
 
 
 def _merge_contacts(session: Session, keep: Company, drop: Company) -> int:
@@ -207,19 +234,37 @@ def _merge_contacts(session: Session, keep: Company, drop: Company) -> int:
         if twin is None:
             c.company = keep  # back_populates moves it between the two lists
             moved += 1
-            continue
-        for field in CONTACT_FIELDS:
-            if _empty(getattr(twin, field)) and not _empty(getattr(c, field)):
-                setattr(twin, field, getattr(c, field))
-        if twin.lead_status in (None, "new") and c.lead_status not in (None, "new"):
-            twin.lead_status = c.lead_status
-        twin.is_decision_maker = bool(twin.is_decision_maker or c.is_decision_maker)
-        session.flush()
-        _move_list_items(session, ListItem.contact_id, c.id, twin.id)
-        for a in session.scalars(select(Activity).where(Activity.contact_id == c.id)):
-            a.contact_id = twin.id
-        drop.contacts.remove(c)  # delete-orphan: the row is deleted on flush
+        else:
+            _merge_person(session, twin, c)
     return moved
+
+
+def duplicate_people(company: Company) -> list[tuple[Contact, Contact]]:
+    """Pairs (keep, copy) of the same person saved twice at `company`, oldest kept."""
+    pairs, kept = [], []
+    for c in sorted(company.contacts, key=lambda c: c.id or 0):
+        twin = _find_twin(kept, c)
+        if twin is None:
+            kept.append(c)
+        else:
+            pairs.append((twin, c))
+    return pairs
+
+
+def merge_duplicate_people(session: Session, company: Company) -> int:
+    """Merge the people saved twice at `company`. Returns how many copies were removed."""
+    removed, kept = 0, []
+    for c in sorted(company.contacts, key=lambda c: c.id or 0):
+        twin = _find_twin(kept, c)
+        if twin is None:
+            kept.append(c)
+        else:  # merged one by one: a third copy can match what the second one added
+            _merge_person(session, twin, c)
+            removed += 1
+    if removed:
+        session.flush()
+        rescore(company)
+    return removed
 
 
 def _merge_google_profile(keep: Company, winner: Company, loser: Company) -> None:
@@ -351,6 +396,7 @@ def merge_companies(session: Session, keep: Company, drop: Company, reason: str 
     for source, ref in refs:
         session.add(CompanySource(company_id=keep.id, source=source, source_ref=ref))
 
+    merge_duplicate_people(session, keep)  # people keep had twice already
     apply_company_phone(keep)
     rescore(keep)
     session.flush()
@@ -414,6 +460,34 @@ def merge_all_duplicates(session: Session) -> int:
             keep = merge_companies(session, keep, copy, reason)
             removed += 1
         session.commit()
+    return removed
+
+
+def _companies_with_people(session: Session) -> list[Company]:
+    """Companies with two or more people (only these can have a person twice)."""
+    ids = select(Contact.company_id).where(Contact.company_id.is_not(None)).group_by(
+        Contact.company_id).having(func.count() > 1)
+    return list(session.scalars(select(Company).where(Company.id.in_(ids)).order_by(Company.id)))
+
+
+def find_all_duplicate_people(session: Session) -> list[tuple[Company, list[tuple[Contact, Contact]]]]:
+    """[(company, [(keep, copy), ...]), ...] for every company with a person saved twice."""
+    found = []
+    for company in _companies_with_people(session):
+        pairs = duplicate_people(company)
+        if pairs:
+            found.append((company, pairs))
+    return found
+
+
+def merge_all_duplicate_people(session: Session) -> int:
+    """Merge every person saved twice at the same company. Returns how many copies were removed."""
+    removed = 0
+    for company in _companies_with_people(session):
+        n = merge_duplicate_people(session, company)
+        if n:
+            removed += n
+            session.commit()
     return removed
 
 

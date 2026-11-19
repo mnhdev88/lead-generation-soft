@@ -77,12 +77,15 @@ def filters(
     min_intent: ScoreFilter = None,  # intent score of looking_for (best service for none / "any") >= this
     include_blocked: bool = False,  # also show businesses on the do-not-contact list
     fit: Literal["good", "poor"] | None = None,  # your ideal customer (app/fit.py)
+    exported: bool | None = None,  # False = never exported (CSV / Excel / Google Sheets)
 ) -> Select:
     """Shared query filters for the list and export endpoints (and the Google Sheets
     export, which calls it as a plain function: filters(job_id=4, has_email=True))."""
     _check_score("min_score", min_score)
     _check_score("min_intent", min_intent)
     stmt = select(Company)
+    if exported is not None:
+        stmt = stmt.where(Company.exported_at.is_not(None) if exported else Company.exported_at.is_(None))
     if job_id is not None:
         stmt = stmt.where(Company.id.in_(select(JobResult.company_id).where(JobResult.job_id == job_id)))
     if batch_id:
@@ -311,7 +314,9 @@ def export_csv(
     looking_for: LookingFor | None = None,
     session: Session = Depends(get_session),
 ):
-    headers, rows = exporting.company_table(session.scalars(_ordered(stmt, sort, looking_for)))
+    companies = list(session.scalars(_ordered(stmt, sort, looking_for)))
+    headers, rows = exporting.company_table(companies)
+    exporting.mark_exported(session, companies)
     return exporting.csv_response(headers, rows, "leads.csv")
 
 
@@ -322,7 +327,9 @@ def export_xlsx(
     looking_for: LookingFor | None = None,
     session: Session = Depends(get_session),
 ):
-    headers, rows = exporting.company_table(session.scalars(_ordered(stmt, sort, looking_for)))
+    companies = list(session.scalars(_ordered(stmt, sort, looking_for)))
+    headers, rows = exporting.company_table(companies)
+    exporting.mark_exported(session, companies)
     return exporting.xlsx_response(headers, rows, "leads.xlsx")
 
 
@@ -334,7 +341,9 @@ def export_custom_xlsx(
     session: Session = Depends(get_session),
 ):
     """The same businesses, in the columns of our CRM import template."""
-    headers, rows = exporting.custom_company_table(session.scalars(_ordered(stmt, sort, looking_for)))
+    companies = list(session.scalars(_ordered(stmt, sort, looking_for)))
+    headers, rows = exporting.custom_company_table(companies)
+    exporting.mark_exported(session, companies)
     return exporting.xlsx_response(headers, rows, "leads-custom.xlsx")
 
 

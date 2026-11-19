@@ -370,6 +370,7 @@ class ListItemsRequest(BaseModel):
 
 class ListItemsResult(BaseModel):
     changed: int  # items added (or removed)
+    in_other_lists: int = 0  # adding: how many of the added were already in another list
 
 
 class ListFreshness(BaseModel):
@@ -567,3 +568,41 @@ class UserUpdate(BaseModel):
     role: Role | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=1, max_length=128)  # admin sets a new one
+
+
+# ----- duplicates (app/dedupe.py) -----
+
+
+class DuplicateBusiness(BaseModel):
+    id: int
+    name: str
+    source: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    website: str | None = None
+    reason: str = ""  # why it is the same as the first one ("same phone and name"); "" for the first
+
+
+class DuplicatePerson(BaseModel):
+    id: int
+    name: str | None = None
+    email: str | None = None
+    title: str | None = None
+
+
+class DuplicatePeopleGroup(BaseModel):
+    company_id: int
+    company_name: str
+    pairs: list[list[DuplicatePerson]]  # [[kept, copy], ...]
+
+
+class DuplicatesOut(BaseModel):
+    business_copies: int  # businesses that would be merged away
+    people_copies: int
+    businesses: list[list[DuplicateBusiness]]  # the first groups (oldest first in each)
+    people: list[DuplicatePeopleGroup]
+
+
+class DuplicatesMerged(BaseModel):
+    businesses: int
+    people: int

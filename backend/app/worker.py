@@ -38,6 +38,7 @@ from .dedupe import merge_if_duplicate
 from .intent import apply_intent
 from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from .people import classify, linkedin
+from .people.matching import find_same_person
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import apollo, hunter, phone_lookup, registry, websearch
 from .providers.hunter import HunterError
@@ -410,19 +411,11 @@ def _confirm(contact: Contact, source: str) -> None:
     contact.confirmed_by = seen  # a new list, so the JSON column is saved
 
 
-def _same_name(a: str | None, b: str | None) -> bool:
-    """'John A. Smith' and 'John Smith' are the same person (first and last name agree)."""
-    wa = [w.strip(".,").lower() for w in (a or "").split()]
-    wb = [w.strip(".,").lower() for w in (b or "").split()]
-    return len(wa) >= 2 and len(wb) >= 2 and wa[0] == wb[0] and wa[-1] == wb[-1]
-
-
-def _find_contact(company: Company, name: str | None, email: str | None) -> Contact | None:
-    """An existing contact with the same email or the same full name (case-insensitive)."""
-    for c in company.contacts:
-        if (email and (c.email or "").lower() == email) or (name and (c.full_name or "").lower() == name.lower()):
-            return c
-    return None
+def _find_contact(company: Company, name: str | None, email: str | None,
+                  linkedin_url: str | None = None) -> Contact | None:
+    """The same person saved earlier: same LinkedIn profile, email, or first and last name
+    ("Dr. John A. Smith" = "John Smith"). See app/people/matching.py."""
+    return find_same_person(company.contacts, name, email, linkedin_url)
 
 
 def _save_people(session, company: Company, people, matched: list[Contact] | None = None) -> int:
@@ -436,11 +429,17 @@ def _save_people(session, company: Company, people, matched: list[Contact] | Non
         email = (p.email or "").strip().lower() or None
         if not name and not email:
             continue
-        match = _find_contact(company, name, email)
+        match = _find_contact(company, name, email, p.linkedin_url)
         if match is None:
             match = Contact(full_name=name or None, source="website")
             match.first_name, match.last_name = _split_name(name) if name else (None, None)
             company.contacts.append(match)
+        elif name and match.source == "website" and len(name.split()) > len((match.full_name or "").split()):
+            # The same person under a fuller name ("David J. Weiner" for "David Weiner").
+            match.full_name = name
+            match.first_name, match.last_name = _split_name(name)
+        if p.title and (match.title or "").strip().lower() in NAME_PREFIXES:
+            match.title = None  # "Dr." alone is not a job title: the real one below replaces it
         # Fill only the empty fields, so re-crawling never overwrites good data.
         for name_, value in (("title", p.title), ("phone", p.phone), ("linkedin_url", p.linkedin_url),
                              ("source_url", p.source_url)):
@@ -578,6 +577,28 @@ def _new_crawl_stats() -> dict:
     return {"with_emails": 0, "emails": 0, "people": 0, "failed": 0}
 
 
+def _merge_after_crawl(session, phones_before: dict[int, str | None]) -> int:
+    """The crawl found a phone number a company didn't have: it may now match a company
+    saved earlier (app/dedupe.py checked when it was saved, without the phone). Merge them.
+    Returns how many copies were removed."""
+    merged = 0
+    for company_id, before in phones_before.items():
+        company = session.get(Company, company_id)
+        if company is None or not company.phone_e164 or company.phone_e164 == before:
+            continue  # merged away already, or no new phone
+        try:
+            while True:  # one at a time: there can be more than one copy
+                company, removed_id = merge_if_duplicate(session, company)
+                if removed_id is None:
+                    break
+                merged += 1
+            session.commit()
+        except Exception:
+            log.exception("Merging duplicates of company %s failed", company_id)
+            session.rollback()
+    return merged
+
+
 def run_enrich_job(session, job: SearchJob) -> None:
     """Crawl company websites. job.result_count = number of companies whose website
     gave at least one email in this run."""
@@ -608,14 +629,18 @@ def run_enrich_job(session, job: SearchJob) -> None:
         job.result_count = stats["with_emails"]
         job.progress_message = f"Crawled {done}/{total} websites — {stats['emails']} emails found"
 
+    phones_before = {c.id: c.phone_e164 for c in with_website}
     if with_website:
         asyncio.run(_crawl_all(session, with_website, stats, on_progress))
+    merged = _merge_after_crawl(session, phones_before)
 
     message = (
         f"Crawled {len(with_website)} websites: {stats['with_emails']} with emails, "
         f"{stats['people']} people found, {stats['failed']} failed"
     )
     extras = []
+    if merged:
+        extras.append(f"merged {merged} duplicate{'s' if merged != 1 else ''}")
     if no_website:
         extras.append(f"{len(no_website)} without a website")
     if skipped:
@@ -708,7 +733,7 @@ def _save_hunter_people(company: Company, people) -> int:
         name = " ".join(f"{p.first_name or ''} {p.last_name or ''}".split()) or None
         if not name or getattr(p, "email_type", None) == "generic":
             continue  # not a person: no contact row
-        contact = _find_contact(company, name, email)
+        contact = _find_contact(company, name, email, p.linkedin_url)
         if contact is None:
             contact = Contact(full_name=name, first_name=p.first_name, last_name=p.last_name, source="hunter")
             company.contacts.append(contact)
@@ -988,25 +1013,6 @@ def run_emails_job(session, job: SearchJob) -> None:
 # ----- people ("Find owner") jobs -------------------------------------------------
 
 
-def _same_linkedin(a: str | None, b: str | None) -> bool:
-    """Two links to the same LinkedIn profile (www./pk., http/https, trailing / ignored)."""
-    def norm(url: str) -> str:
-        return linkedin.profile_url(url.replace("http://", "https://", 1)) or url.strip().lower().rstrip("/")
-
-    return bool(a and b) and norm(a) == norm(b)
-
-
-def _find_person(company: Company, name: str | None, email: str | None, linkedin_url: str | None) -> Contact | None:
-    """An existing contact with the same LinkedIn profile, else the same email or full name,
-    else the same first and last name ("John A. Smith" = "John Smith")."""
-    if linkedin_url:
-        for c in company.contacts:
-            if _same_linkedin(c.linkedin_url, linkedin_url):
-                return c
-    return _find_contact(company, name, email) or next(
-        (c for c in company.contacts if _same_name(c.full_name, name)), None)
-
-
 def _apollo_email_status(status: str | None) -> str | None:
     """Apollo's email_status -> ours: "verified" -> "valid", "unavailable"/none -> None,
     anything else ("extrapolated", "guessed"...) -> "unknown" (the email check decides)."""
@@ -1025,7 +1031,7 @@ def _save_found_person(company: Company, *, name: str, title: str | None, linked
     the empty fields of the same person saved earlier. Returns (contact, newly created)."""
     name = " ".join((name or "").split())
     email = (email or "").strip().lower() or None
-    contact = _find_person(company, name, email, linkedin_url)
+    contact = _find_contact(company, name, email, linkedin_url)
     created = contact is None
     if created:
         contact = Contact(full_name=name or None, source=source)

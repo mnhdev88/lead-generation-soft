@@ -89,20 +89,22 @@ def export_to_sheets(body: SheetsExportRequest, session: Session = Depends(get_s
     try:
         if body.kind == "companies":
             stmt = call_filters(companies_router.filters, body.filters)
-            items = session.scalars(
+            items = list(session.scalars(
                 stmt.options(selectinload(Company.contacts))
                 .order_by(*companies_router.company_order(body.filters.get("sort"), body.filters.get("looking_for")))
-            )
+            ))
             headers, rows = exporting.company_table(items)
         else:
             stmt = call_filters(people_filters, body.filters)
-            items = session.scalars(
+            items = exporting.one_per_email(session.scalars(
                 stmt.options(selectinload(Contact.company)).order_by(*people_order(body.filters.get("sort")))
-            )
+            ))
             headers, rows = exporting.people_table(items)
     except (TypeError, ValueError) as e:
         raise HTTPException(400, f"Invalid filters: {e}")
     try:
-        return sheets.export_rows(headers, rows, body.spreadsheet, body.tab_name)
+        result = sheets.export_rows(headers, rows, body.spreadsheet, body.tab_name)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    exporting.mark_exported(session, items)  # only once the rows are in the sheet
+    return result

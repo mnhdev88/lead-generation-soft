@@ -147,6 +147,8 @@ class Company(Base):
     source_ref: Mapped[str] = mapped_column(String(200))
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    # Last time this business went out in a CSV/Excel/Google Sheets export ("skip exported").
+    exported_at: Mapped[datetime | None]
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company", cascade="all, delete-orphan")
@@ -197,6 +199,7 @@ class Contact(Base):
     score: Mapped[int | None] = mapped_column(Integer)  # 0-100
     score_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    exported_at: Mapped[datetime | None]  # last export of this person (see Company.exported_at)
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
 
