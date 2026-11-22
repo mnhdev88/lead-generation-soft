@@ -103,6 +103,13 @@ class FindPeopleRequest(BaseModel):
     confirm: bool = False
 
 
+class CheckBbbRequest(BaseModel):
+    """Look up the BBB profiles of hand-picked companies (one web search each)."""
+
+    company_ids: list[int] = Field(min_length=1, max_length=2000)
+    force: bool = False  # check again even if checked in the last PEOPLE_RECHECK_DAYS days
+
+
 class FindEmailsJobRequest(BaseModel):
     force: bool = False
     use_hunter: bool = True
@@ -239,6 +246,8 @@ class CompanyOut(BaseModel):
     search_rank: int | None = None  # best position in a Google Maps search (1 = top)
     peer_reviews_median: int | None = None  # typical review count of the same search
     pagespeed: dict = {}  # mobile PageSpeed (app/pagespeed.py), {} = not checked
+    bbb: dict = {}  # Better Business Bureau facts (app/bbb.py), {} = not checked
+    bbb_checked_at: UtcDatetime | None = None
     list_ids: list[int] = []  # lists this company is in (filled by the router)
     do_not_contact: str | None = None  # why it is on the do-not-contact list (filled by the router)
     # Who hosts its email, e.g. "Google Workspace" (app/emails/hosting.py; filled by the router)
@@ -254,7 +263,7 @@ class CompanyOut(BaseModel):
         return v or []
 
     @field_validator("socials", "website_signals", "email_statuses", "ppp", "intent", "review_signals",
-                     "pagespeed", "phone_lookup", mode="before")
+                     "pagespeed", "phone_lookup", "bbb", mode="before")
     @classmethod
     def _none_to_dict(cls, v):
         return v or {}

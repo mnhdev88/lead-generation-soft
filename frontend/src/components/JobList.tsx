@@ -30,6 +30,7 @@ const SOURCE_LABEL: Record<string, string> = {
   google: "Google Maps",
   crawler: "Website crawl",
   emails: "Email check",
+  bbb: "BBB check",
 };
 
 const isActive = (job: Job) => job.status === "queued" || job.status === "running";
@@ -320,6 +321,7 @@ const KIND_TITLE: Record<Job["kind"], string> = {
   enrich: "Website crawl",
   emails: "Email check",
   people: "Finding owners",
+  bbb: "BBB check",
 };
 
 /** One website-crawl, email-check or owner-lookup job: label, status, and a progress bar while it runs. */
@@ -327,6 +329,7 @@ function ChildJobInfo({ job, title }: { job: Job; title: string }) {
   const pct = job.total > 0 ? Math.round((job.processed / job.total) * 100) : 0;
   const isEmails = job.kind === "emails";
   const isPeople = job.kind === "people";
+  const isBbb = job.kind === "bbb";
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
@@ -343,14 +346,16 @@ function ChildJobInfo({ job, title }: { job: Job; title: string }) {
                 ? "Businesses with a deliverable email (verified, or on a server that accepts every address)"
                 : isPeople
                   ? "Businesses where we found an owner or decision-maker"
-                  : "Websites that gave at least one email"
+                  : isBbb
+                    ? "Businesses whose BBB profile was found"
+                    : "Websites that gave at least one email"
           }
         >
           {job.status !== "done"
             ? job.status
             : isEmails
               ? `${job.result_count} deliverable`
-              : isPeople
+              : isPeople || isBbb
                 ? `${job.result_count} found`
                 : `${job.result_count} with email`}
         </span>

@@ -5,7 +5,7 @@ export const API_URL = "";
 
 export type JobStatus = "queued" | "running" | "done" | "failed";
 // enrich = website crawl; emails = find + verify emails; people = look up owners (LinkedIn search results / Apollo.io)
-export type JobKind = "search" | "enrich" | "emails" | "people";
+export type JobKind = "search" | "enrich" | "emails" | "people" | "bbb";
 
 export type Job = {
   id: number;
@@ -187,6 +187,19 @@ export type PageSpeed = {
   seo?: number; // 0-100
   error?: string;
   checked_at?: string;
+};
+
+// Better Business Bureau facts from a web search (backend/app/bbb.py). Empty {} = not checked;
+// {found: false} = checked, no profile found. A fact that is missing or null = can't tell.
+export type Bbb = {
+  found?: boolean;
+  url?: string;
+  name?: string | null;
+  accredited?: boolean | null;
+  accredited_since?: string | null;
+  rating?: string | null; // "A+" ... "F", or "NR" (not rated)
+  complaints?: number | null;
+  started?: number | null; // year the business started
 };
 
 // What a lead is likely to buy now (backend/app/intent.py).
@@ -432,6 +445,8 @@ export type Company = {
   search_rank: number | null; // best position in a Google search (1 = top)
   peer_reviews_median: number | null; // typical review count of similar businesses in the same search
   pagespeed: PageSpeed;
+  bbb?: Bbb;
+  bbb_checked_at?: string | null;
   // The kind of business intent.py scores booking / ordering / shop / payment for
   // (business_kind() there). Missing or null = unknown: then we never say one is "not found".
   business_kind?: BusinessKind | null;
@@ -714,6 +729,9 @@ export const api = {
     opts: { use_apollo?: boolean; find_emails?: boolean; confirm?: boolean } = {},
   ) =>
     request<Job>("/api/companies/find-people", post({ company_ids: companyIds, ...opts })),
+  // Look up the BBB profiles of hand-picked companies (one web search each; US only).
+  checkBbb: (companyIds: number[], opts: { force?: boolean } = {}) =>
+    request<Job>("/api/companies/check-bbb", post({ company_ids: companyIds, ...opts })),
 
   // ----- companies -----
   listCompanies: (filters: CompanyFilters, limit: number, offset: number) =>

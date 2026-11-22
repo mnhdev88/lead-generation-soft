@@ -142,6 +142,10 @@ class Company(Base):
     intent_software: Mapped[int | None] = mapped_column(Integer, index=True)
     intent_marketing: Mapped[int | None] = mapped_column(Integer, index=True)
     # When "Find owner" last looked this business up (LinkedIn search / Apollo): app/worker.py
+    # Better Business Bureau facts from a web search (app/bbb.py): {"found": True, "url": ...,
+    # "accredited": True, "rating": "A+", "complaints": 3, ...} or {"found": False}; {} = not checked.
+    bbb: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    bbb_checked_at: Mapped[datetime | None]
     people_searched_at: Mapped[datetime | None]
     source: Mapped[str] = mapped_column(String(50))
     source_ref: Mapped[str] = mapped_column(String(200))

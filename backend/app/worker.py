@@ -28,7 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from . import config, ppp
+from . import bbb, config, ppp
 from .config import CRAWL_CONCURRENCY
 from .db import SessionLocal
 from .emails import find_people_emails, learn_pattern, normalize_email, verify_emails
@@ -39,6 +39,7 @@ from .intent import apply_intent
 from .models import Activity, Company, CompanySource, Contact, DomainInfo, JobResult, ListItem, SearchJob
 from .people import classify, linkedin
 from .people.matching import find_same_person
+from .ppp import us_location
 from .phones import apply_company_phone, apply_contact_phone, best_phone, normalize_saved_phones
 from .providers import apollo, hunter, phone_lookup, registry, websearch
 from .providers.hunter import HunterError
@@ -1295,6 +1296,8 @@ def run_job(job_id: int) -> None:
                 run_emails_job(session, job)
             elif job.kind == "people":
                 run_people_job(session, job)
+            elif job.kind == "bbb":
+                run_bbb_job(session, job)
             else:
                 run_search_job(session, job)
         except SourceError as e:
@@ -1306,6 +1309,85 @@ def run_job(job_id: int) -> None:
             job.status, job.error, job.progress_message = "failed", f"{type(e).__name__}: {e}", None
         job.finished_at = _now()
         session.commit()
+
+
+# ----- BBB checks ("Check BBB": one web search per business) ------------------------
+
+
+def _bbb_checked_recently(company: Company) -> bool:
+    """Checked less than PEOPLE_RECHECK_DAYS ago: BBB facts change slowly."""
+    when = company.bbb_checked_at
+    if when is None:
+        return False
+    if when.tzinfo is None:  # SQLite gives dates back without a time zone
+        when = when.replace(tzinfo=timezone.utc)
+    return _now() - when < timedelta(days=config.PEOPLE_RECHECK_DAYS)
+
+
+def run_bbb_job(session, job: SearchJob) -> None:
+    """Look up each company's BBB profile in web search results (app/bbb.py; we never open
+    bbb.org). US businesses only. job.result_count = profiles found."""
+    params = job.params or {}
+    force = params.get("force") is True
+    if not websearch.available():
+        raise SourceError("Checking BBB needs a web search key (BRAVE_API_KEY or SERPER_API_KEY) in "
+                          "backend/.env. Add one and restart the backend.")
+    companies = _job_targets(session, job)
+    job.total, job.processed, job.result_count = len(companies), 0, 0
+    session.commit()
+
+    skipped = not_us = failed = 0
+    stop_note = None
+    failures = 0  # web search errors in a row
+    for i, company in enumerate(companies, start=1):
+        job.progress_message = _short(f"Checking BBB: {i} of {len(companies)}...")
+        session.commit()
+        state, _ = us_location(company)
+        if not state:
+            not_us += 1
+        elif not force and _bbb_checked_recently(company):
+            skipped += 1
+            if (company.bbb or {}).get("found"):
+                job.result_count += 1
+        else:
+            try:
+                results = websearch.search(bbb.query(company), WEB_SEARCH_RESULTS)
+                company.bbb = bbb.parse_results(results, company)
+                company.bbb_checked_at = _now()
+                if company.bbb.get("found"):
+                    job.result_count += 1
+                rescore(company)
+                failures = 0
+            except UsageLimitError:
+                stop_note = "the web search monthly limit was reached"
+            except SourceError as e:
+                failed += 1
+                failures += 1
+                if failures >= WEB_SEARCH_MAX_FAILURES:
+                    stop_note = f"web search stopped: {e}"
+            except Exception:  # one bad company never stops the job
+                log.exception("BBB check of company %s failed", company.id)
+                session.rollback()
+                failed += 1
+        job.processed += 1
+        session.commit()
+        if stop_note:
+            break
+
+    message = f"Checked BBB for {job.processed} of {len(companies)} businesses: {job.result_count} profiles found."
+    extras = []
+    if skipped:
+        extras.append(f"{skipped} checked recently, kept")
+    if not_us:
+        extras.append(f"{not_us} not in the US (BBB covers the US), skipped")
+    if failed:
+        extras.append(f"{failed} failed")
+    if extras:
+        message += " " + "; ".join(extras).capitalize() + "."
+    if stop_note:
+        message += f" Stopped: {stop_note}; kept what was found."
+    job.progress_message = _short(message)
+    job.status = "done"
 
 
 def _mark_failed(job_id: int, error: str) -> None:
@@ -1333,7 +1415,7 @@ def recover_jobs() -> None:
             if job.kind == "search" and job.source == "google":
                 job.status, job.error, job.finished_at = "failed", INTERRUPTED_PAID_SEARCH, _now()
                 job.progress_message = None
-            elif job.kind == "people":
+            elif job.kind in ("people", "bbb"):
                 job.status, job.error, job.finished_at = "failed", INTERRUPTED_PAID_LOOKUP, _now()
                 job.progress_message = None
             else:

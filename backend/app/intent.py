@@ -30,11 +30,13 @@ Services and their points
                waiting +15, no live chat +5
     marketing  runs ads +20, hiring marketing +15, social profiles but no own website +10,
                rating below 4.0 +15, fewer reviews than competitors +10, reviews complain
-               about the website +5, measures visitors but runs no ads +5
+               about the website +5, measures visitors but runs no ads +5, BBB rating C+ or lower or
+               3+ BBB complaints +10
 """
 import re
 from datetime import datetime, timezone
 
+from .bbb import talking_points
 from .models import Company
 from .utils import is_shared_platform, normalize_url, own_domain
 
@@ -113,6 +115,7 @@ MIN_REVIEWS_FOR_RATING = 3  # one or two unhappy reviews don't make a "low ratin
 MARKETING_BELOW_PEERS = 10
 BELOW_PEERS_RATIO = 0.5  # fewer reviews than half the typical count in the search
 MARKETING_WEBSITE_COMPLAINTS = 5
+MARKETING_BBB = 10  # low BBB rating or several BBB complaints (app/bbb.py)
 MARKETING_MEASURES_NO_ADS = 5
 
 # Statuses that mean "don't bother" (the same as in scoring.py, which imports this module).
@@ -512,6 +515,10 @@ def _marketing_points(company: Company, signals: dict, review: dict) -> list[tup
         points.append(("Reviews complain about the website", MARKETING_WEBSITE_COMPLAINTS))
     if signals.get("has_analytics") is True and pixels is not None and not pixels and not _tag_manager(signals):
         points.append(("Measures visitors but runs no ads", MARKETING_MEASURES_NO_ADS))
+    bbb_issues = [p for p in talking_points(company.bbb if isinstance(company.bbb, dict) else None)
+                  if not p.startswith("Pays")]
+    if bbb_issues:
+        points.append((" and ".join(bbb_issues), MARKETING_BBB))
     return points
 
 

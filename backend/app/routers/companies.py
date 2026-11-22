@@ -15,6 +15,7 @@ from ..providers import apollo, registry, websearch
 from ..utils import own_domain
 from ..schemas import (
     ActivityOut,
+    CheckBbbRequest,
     CompanyOut,
     CompanyPage,
     CompanyUpdate,
@@ -323,6 +324,28 @@ def find_people(body: FindPeopleRequest, session: Session = Depends(get_session)
         limit=len(found),
         params={"company_ids": found, "use_apollo": body.use_apollo, "find_emails": body.find_emails,
                 "force": body.force, "confirm": body.confirm},
+        progress_message="Waiting in queue...",
+    )
+    session.add(job)
+    session.commit()
+    return job
+
+
+@router.post("/check-bbb", response_model=JobOut, status_code=201)
+def check_bbb(body: CheckBbbRequest, session: Session = Depends(get_session)):
+    """Queue a "Check BBB" job: one web search per business for its Better Business Bureau
+    profile (rating, accreditation, complaints). We never open bbb.org (app/bbb.py)."""
+    if not websearch.available():
+        raise HTTPException(400, "Checking BBB needs a web search key (BRAVE_API_KEY or SERPER_API_KEY) in "
+                                 "backend/.env. Add one and restart the backend.")
+    found = _selected_ids(session, body.company_ids)
+    job = SearchJob(
+        kind="bbb",
+        query=_selected_label(len(found)),
+        location="",
+        source="bbb",
+        limit=len(found),
+        params={"company_ids": found, "force": body.force},
         progress_message="Waiting in queue...",
     )
     session.add(job)

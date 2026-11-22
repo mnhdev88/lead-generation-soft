@@ -236,6 +236,10 @@ export function ResultsTable({
   const bulkFindOwners = () =>
     run("bulk", async () => onJobCreated(await api.findPeople(selectedIds)), "Could not start the owner lookup");
 
+  // BBB rating, accreditation and complaints, from web search results (US businesses only).
+  const bulkCheckBbb = () =>
+    run("bulk", async () => onJobCreated(await api.checkBbb(selectedIds)), "Could not start the BBB check");
+
   const bulkSetStatus = (status: LeadStatus) =>
     run(
       "bulk",
@@ -466,6 +470,14 @@ export function ResultsTable({
             title="Look for the owners in web search results of LinkedIn profiles (and in Apollo.io if it is set up), then find their emails. Leads that already have a decision-maker are skipped."
           >
             Find owners
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={busy !== null}
+            onClick={bulkCheckBbb}
+            title="Look up their Better Business Bureau rating, accreditation and complaints in web search results (one search each, US businesses only). We never open bbb.org ourselves."
+          >
+            Check BBB
           </button>
           <button
             className="btn-secondary"

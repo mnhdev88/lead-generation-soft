@@ -357,3 +357,20 @@ We never scrape LinkedIn (its terms forbid it, accounts get banned):
 
 A business is not looked up again for 90 days (`PEOPLE_RECHECK_DAYS`). Every person and business
 also has a **Find on LinkedIn** link, which opens LinkedIn's own search in your browser.
+
+## BBB (Better Business Bureau)
+
+**Check BBB** (ticked rows, or in a business's panel) looks up each US business's BBB profile with
+the same web search key (`BRAVE_API_KEY` or `SERPER_API_KEY`), one search per business, e.g.
+`site:bbb.org/us "Smile Dental" Austin TX`. We never open bbb.org (its terms forbid scraping):
+only the search results' links, titles and snippets are read (`backend/app/bbb.py`).
+
+A profile counts only when its link is a BBB business profile, its name is this business's name
+and it is in the business's state. From the snippets we keep what they say plainly: the **rating**
+(A+ to F, or not rated), **accredited** (and since when), the number of **complaints** and the year
+the business **started**. Snippets differ, so a fact they don't show stays empty ("can't tell").
+
+Why it matters for a sale: a rating of C+ or lower, or 3+ complaints, adds +10 to the Marketing
+intent score and is a call topic; a business that pays for accreditation spends on its reputation.
+Businesses outside the US are skipped; a business is checked again after `PEOPLE_RECHECK_DAYS`
+(or right away with "Check BBB again" in its panel).

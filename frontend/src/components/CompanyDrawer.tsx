@@ -179,7 +179,7 @@ export function CompanyDrawer({
   const [loaded, setLoaded] = useState<Loaded>({ company: null, activities: [], error: null });
   const [reload, setReload] = useState(0); // bump to re-read the company and its timeline
   const [startedJobId, setStartedJobId] = useState<number | null>(null);
-  const [busy, setBusy] = useState<"people" | "owner" | "verify" | "status" | "note" | null>(null);
+  const [busy, setBusy] = useState<"people" | "owner" | "verify" | "bbb" | "status" | "note" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [note, setNote] = useState("");
 
@@ -255,7 +255,7 @@ export function CompanyDrawer({
   );
   const startedJob = startedJobId !== null ? jobs.find((j) => j.id === startedJobId) : undefined;
 
-  async function startJob(kind: "people" | "owner" | "verify") {
+  async function startJob(kind: "people" | "owner" | "verify" | "bbb") {
     setBusy(kind);
     setActionError(null);
     try {
@@ -265,7 +265,9 @@ export function CompanyDrawer({
           : kind === "owner"
             ? // then finds their emails too; with a decision-maker already, a second source confirms them
               await api.findPeople([companyId], { confirm: hasDecisionMaker })
-            : await api.findEmails([companyId], { force: true }); // re-check even recently checked emails
+            : kind === "bbb"
+              ? await api.checkBbb([companyId], { force: true })
+              : await api.findEmails([companyId], { force: true }); // re-check even recently checked emails
       setStartedJobId(job.id);
       onJobCreated(job);
     } catch (err) {
@@ -408,6 +410,14 @@ export function CompanyDrawer({
               >
                 {busy === "verify" ? "Starting…" : "Verify emails"}
               </button>
+              <button
+                className="btn-secondary text-xs"
+                disabled={busy !== null || runningJob !== undefined}
+                onClick={() => startJob("bbb")}
+                title="Look up the Better Business Bureau rating, accreditation and complaints in web search results (one search, US businesses only). We never open bbb.org ourselves."
+              >
+                {busy === "bbb" ? "Starting…" : company?.bbb_checked_at ? "Check BBB again" : "Check BBB"}
+              </button>
               <AddToListButton
                 companyIds={[company.id]}
                 onDone={() => {
@@ -473,6 +483,7 @@ export function CompanyDrawer({
               <EmailsSection company={company} onBounced={reportBounced} />
               <PeopleSection contacts={company.contacts} companyName={company.name} onBounced={reportBounced} />
               <GoogleProfileSection company={company} />
+              <BbbSection company={company} />
               <WebsiteSection company={company} />
               <ActivitySection
                 company={company}
@@ -924,6 +935,41 @@ function GoogleProfileSection({ company: c }: { company: Company }) {
       {speedOk && ps.checked_at && typeof ps.performance === "number" && (
         <p className="text-[11px] text-[var(--muted)]">Speed checked {formatDate(ps.checked_at)}</p>
       )}
+    </Section>
+  );
+}
+
+/** Better Business Bureau facts (from web search results). Nothing until "Check BBB" has run. */
+function BbbSection({ company: c }: { company: Company }) {
+  const b = c.bbb ?? {};
+  if (!c.bbb_checked_at) return null;
+  if (!b.found) {
+    return (
+      <Section title="BBB">
+        <p className="text-sm text-[var(--muted)]">No BBB profile found in the search ({formatDate(c.bbb_checked_at)}).</p>
+      </Section>
+    );
+  }
+  const facts: [string, React.ReactNode][] = [];
+  if (b.rating) facts.push(["Rating", b.rating === "NR" ? "Not rated" : b.rating]);
+  if (b.accredited === true)
+    facts.push(["Accredited", b.accredited_since ? `Yes, since ${b.accredited_since}` : "Yes"]);
+  if (b.accredited === false) facts.push(["Accredited", "No"]);
+  if (typeof b.complaints === "number") facts.push(["Complaints", b.complaints.toLocaleString()]);
+  if (b.started) facts.push(["Business started", String(b.started)]);
+  return (
+    <Section title="BBB">
+      {facts.length > 0 ? (
+        <FactList facts={facts} />
+      ) : (
+        <p className="text-sm text-[var(--muted)]">Profile found; the search didn&apos;t show its rating or complaints.</p>
+      )}
+      {b.url && SAFE_LINK.test(b.url) && (
+        <a className="text-sm text-[var(--accent)] hover:underline" href={b.url} target="_blank" rel="noopener noreferrer">
+          Open BBB profile ↗
+        </a>
+      )}
+      <p className="text-[11px] text-[var(--muted)]">From web search results, {formatDate(c.bbb_checked_at)}</p>
     </Section>
   );
 }
