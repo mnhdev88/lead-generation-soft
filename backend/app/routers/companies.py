@@ -1,7 +1,9 @@
+import re
+from collections import Counter
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .. import blocklist, exporting
@@ -19,8 +21,11 @@ from ..schemas import (
     EnrichCompaniesRequest,
     FindEmailsRequest,
     FindPeopleRequest,
+    IntentSummary,
     JobOut,
     NoteCreate,
+    OfferSummary,
+    ReasonCount,
 )
 
 router = APIRouter(prefix="/api/companies", tags=["companies"])
@@ -29,18 +34,36 @@ SORT_PATTERN = "^(name|score|rating|employees|intent)$"
 # Size bands (app/sizing.py), plus "unknown" for companies without a size estimate.
 SizeBandFilter = Literal["solo", "small", "medium", "large", "unknown"]
 SIZE_BAND_FILTERS: tuple[str, ...] = SizeBandFilter.__args__  # type: ignore[attr-defined]
-# Buying intent (app/intent.py): the service a lead may want, or "any" = their best one.
-LookingFor = Literal["website", "seo", "software", "marketing", "any"]
-LOOKING_FOR: tuple[str, ...] = LookingFor.__args__  # type: ignore[attr-defined]
+# Buying intent (app/intent.py): the service(s) a lead may want, e.g. "seo" or "website,seo"
+# (several = their best score among those), or "any" = their best service of all.
+LOOKING_FOR: tuple[str, ...] = ("website", "seo", "software", "marketing", "any")
+_OFFER_WORD = "(website|seo|software|marketing)"
+LOOKING_FOR_PATTERN = f"^(any|{_OFFER_WORD}(,{_OFFER_WORD})*)$"
+LookingFor = Annotated[str | None, Query(pattern=LOOKING_FOR_PATTERN)]
+
+
+def parse_looking_for(looking_for: str | None) -> list[str]:
+    """"website,seo" -> ["website", "seo"] (in the usual order, no repeats); [] for None / "any".
+    Raises ValueError for anything else (the Google Sheets export skips FastAPI's checks)."""
+    if not looking_for or looking_for == "any":
+        return []
+    words = [w.strip() for w in str(looking_for).split(",")]
+    if not all(w in LOOKING_FOR and w != "any" for w in words):
+        raise ValueError(f"looking_for must be one of {', '.join(LOOKING_FOR)}, or several joined by commas")
+    return [o for o in LOOKING_FOR if o in words]
 
 
 def intent_column(looking_for: str | None):
-    """The intent score column for a service; the best service's score for None / "any"."""
-    if looking_for and looking_for != "any":
-        if looking_for not in LOOKING_FOR:  # the Google Sheets export skips FastAPI's checks
-            raise ValueError(f"looking_for must be one of {', '.join(LOOKING_FOR)}")
-        return getattr(Company, f"intent_{looking_for}")
-    return Company.intent_best_score
+    """The intent score column for a service; the highest of several services' scores
+    ("website,seo"); the best service's score for None / "any"."""
+    offers = parse_looking_for(looking_for)
+    if not offers:
+        return Company.intent_best_score
+    column = getattr(Company, f"intent_{offers[0]}")
+    for offer in offers[1:]:  # greatest(a, b, ...), written so SQLite and Postgres both run it
+        other = getattr(Company, f"intent_{offer}")
+        column = case((other > column, other), else_=column)
+    return column
 
 
 # A score filter (min_score, min_intent): a whole number 0-100. Bigger numbers would crash
@@ -73,7 +96,7 @@ def filters(
     lead_status: str | None = None,
     min_score: ScoreFilter = None,
     size_band: SizeBandFilter | None = None,  # solo|small|medium|large, or "unknown" = no estimate
-    looking_for: LookingFor | None = None,  # with min_intent: which service's intent score
+    looking_for: LookingFor = None,  # with min_intent: which service's intent score
     min_intent: ScoreFilter = None,  # intent score of looking_for (best service for none / "any") >= this
     include_blocked: bool = False,  # also show businesses on the do-not-contact list
     fit: Literal["good", "poor"] | None = None,  # your ideal customer (app/fit.py)
@@ -222,7 +245,7 @@ def _get_company(session: Session, company_id: int) -> Company:
 def list_companies(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
-    looking_for: LookingFor | None = None,  # also read by filters(); here for sort=intent
+    looking_for: LookingFor = None,  # also read by filters(); here for sort=intent
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
@@ -311,7 +334,7 @@ def find_people(body: FindPeopleRequest, session: Session = Depends(get_session)
 def export_csv(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
-    looking_for: LookingFor | None = None,
+    looking_for: LookingFor = None,
     session: Session = Depends(get_session),
 ):
     companies = list(session.scalars(_ordered(stmt, sort, looking_for)))
@@ -324,7 +347,7 @@ def export_csv(
 def export_xlsx(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
-    looking_for: LookingFor | None = None,
+    looking_for: LookingFor = None,
     session: Session = Depends(get_session),
 ):
     companies = list(session.scalars(_ordered(stmt, sort, looking_for)))
@@ -337,7 +360,7 @@ def export_xlsx(
 def export_custom_xlsx(
     stmt: Select = Depends(filters),
     sort: str = Query("name", pattern=SORT_PATTERN),
-    looking_for: LookingFor | None = None,
+    looking_for: LookingFor = None,
     session: Session = Depends(get_session),
 ):
     """The same businesses, in the columns of our CRM import template."""
@@ -345,6 +368,77 @@ def export_custom_xlsx(
     headers, rows = exporting.custom_company_table(companies)
     exporting.mark_exported(session, companies)
     return exporting.xlsx_response(headers, rows, "leads-custom.xlsx")
+
+
+# Reasons look like "Slow on mobile (PageSpeed 38) +15". For counting, the parts that differ
+# per business go: the points, anything in brackets and a number at the end ("Rating 3.5").
+_REASON_POINTS = re.compile(r"\s[+-]\d+$")
+_REASON_DETAILS = re.compile(r"\s*\([^)]*\)|\s+\d+(\.\d+)?$")
+_REASON_NAMES = {"Rating": "Low Google rating"}
+TOP_REASONS = 3
+
+
+def reason_key(reason: str) -> str | None:
+    """'Slow on mobile (PageSpeed 38) +15' -> 'Slow on mobile'; None for a note that gives no
+    points ('No website: SEO at most 30', 'Closed → 0')."""
+    if not _REASON_POINTS.search(reason):
+        return None
+    key = _REASON_DETAILS.sub("", _REASON_POINTS.sub("", reason)).strip()
+    return _REASON_NAMES.get(key, key) or None
+
+
+@router.get("/intent-summary", response_model=IntentSummary)
+def intent_summary(
+    stmt: Select = Depends(filters),
+    looking_for: LookingFor = None,  # the services you sell; "any" / none = all four
+    session: Session = Depends(get_session),
+):
+    """How many businesses (of a search: job_id / batch_id) are hot leads for each service
+    you sell, and the most common reasons why."""
+    from ..intent import HOT_SCORE, OFFERS
+    from ..pagespeed import is_shared_page
+
+    offers = parse_looking_for(looking_for) or list(OFFERS)
+    companies = list(session.scalars(stmt))
+    counts = {o: Counter() for o in offers}
+    hot = dict.fromkeys(offers, 0)
+    warm = dict.fromkeys(offers, 0)
+    any_hot = not_read = speed_pending = 0
+    for c in companies:
+        intent = c.intent if isinstance(c.intent, dict) else {}
+        is_hot = False
+        for o in offers:
+            item = intent.get(o) or {}
+            score = item.get("score") or 0
+            if score >= HOT_SCORE:
+                hot[o] += 1
+                is_hot = True
+            elif score > 0:
+                warm[o] += 1
+            if score > 0:
+                counts[o].update({k for k in map(reason_key, item.get("reasons") or []) if k})
+        any_hot += is_hot
+        if c.website:
+            signals = c.website_signals if isinstance(c.website_signals, dict) else {}
+            if not signals.get("pages_crawled"):
+                not_read += 1
+            if c.pagespeed_checked_at is None and not is_shared_page(c.website, c.domain):
+                speed_pending += 1
+    return IntentSummary(
+        total=len(companies),
+        any_hot=any_hot,
+        website_not_read=not_read,
+        speed_pending=speed_pending,
+        offers=[
+            OfferSummary(
+                offer=o,
+                hot=hot[o],
+                warm=warm[o],
+                top_reasons=[ReasonCount(reason=r, count=n) for r, n in counts[o].most_common(TOP_REASONS)],
+            )
+            for o in offers
+        ],
+    )
 
 
 # Keep the "/{company_id}" routes last: they would otherwise also match "/export.csv".

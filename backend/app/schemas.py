@@ -23,6 +23,11 @@ SizeBand = Literal["solo", "small", "medium", "large"]  # app/sizing.py
 # ----- jobs ----------------------------------------------------------------------
 
 
+# The services you sell (app/intent.py). Picking any makes the search crawl the websites,
+# which every intent score needs, and opens the results on those services.
+Offer = Literal["website", "seo", "software", "marketing"]
+
+
 class JobCreate(BaseModel):
     query: str = Field(min_length=2, max_length=200, examples=["dentist"])
     location: str = Field(min_length=2, max_length=200, examples=["Karachi, Pakistan"])
@@ -33,6 +38,7 @@ class JobCreate(BaseModel):
     # Prospect search: job titles/keywords the user is looking for, e.g. ["owner", "manager"].
     # Stored in params.titles; the People page filters by them.
     titles: list[str] = Field(default=[], max_length=20)
+    offers: list[Offer] = Field(default=[], max_length=4)
 
 
 SearchTerm = Annotated[str, Field(min_length=2, max_length=200)]
@@ -47,6 +53,7 @@ class JobBatchCreate(BaseModel):
     limit: int = Field(default=200, ge=1, le=2000)  # per search
     enrich: bool = False
     find_emails: bool = False
+    offers: list[Offer] = Field(default=[], max_length=4)
 
 
 class EnrichCompaniesRequest(BaseModel):
@@ -245,6 +252,28 @@ class CompanyOut(BaseModel):
 class CompanyPage(BaseModel):
     total: int
     items: list[CompanyOut]
+
+
+class ReasonCount(BaseModel):
+    reason: str  # e.g. "Slow on mobile" (the numbers of each business left out)
+    count: int  # how many of the businesses have it
+
+
+class OfferSummary(BaseModel):
+    offer: str  # website | seo | software | marketing
+    hot: int  # businesses with an intent score of HOT_SCORE or more for this service
+    warm: int  # some intent (score 1 to HOT_SCORE - 1)
+    top_reasons: list[ReasonCount]
+
+
+class IntentSummary(BaseModel):
+    """What a search found for the services you sell (app/intent.py)."""
+
+    total: int  # businesses in the search
+    any_hot: int  # hot for at least one of the services asked about
+    website_not_read: int  # have a website that was not crawled yet: their scores may go up
+    speed_pending: int  # websites not tested by Google PageSpeed yet (matters for Website / SEO)
+    offers: list[OfferSummary]
 
 
 class CompanyBrief(BaseModel):

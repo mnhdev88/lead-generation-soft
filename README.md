@@ -301,6 +301,18 @@ Every business gets an **intent score (0-100) per service you sell**: Website, S
 Marketing, with the reasons shown (like the lead score). 60+ is marked **Hot**. In the Leads table,
 pick what you are selling in **Looking for**, tick **Hot only**, or sort by **Intent**.
 
+**What are you selling?** You can also pick one or more services at the top of the search form,
+before you search:
+
+- It lists what the app checks for each service and suggests business types that often need it
+  (click one to add it).
+- The website crawl is switched on, because every intent score reads the website.
+- With Website or SEO picked, Google PageSpeed tests these websites before older ones.
+- The results open on those services, best leads first. Several services means a lead's best
+  score among them counts.
+- A summary above the table shows the hot leads per service, the most common reasons, and how
+  many websites are still being checked.
+
 The scores come from:
 
 - the website crawl: SSL, outdated or DIY site, mobile-friendly, page title/description, Google

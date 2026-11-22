@@ -32,11 +32,11 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from . import config
-from .models import Company
+from .models import Company, JobResult, SearchJob
 from .utils import extract_domain, is_shared_platform
 
 log = logging.getLogger("pagespeed")
@@ -54,6 +54,9 @@ RETRY_ERRORS = ("timeout", "server", "unexpected error", "unreadable answer", "n
 MAX_ATTEMPTS = 3  # after this many passing errors in a row the error is kept for good
 RETRY_AFTER_HOURS = 6  # wait at least this long before trying such a company again
 CANDIDATE_ROWS = 200  # companies looked at per slice (shared pages and waiting ones are skipped fast)
+# Searches for selling these services get their websites tested first, for this many days.
+PRIORITY_OFFERS = {"website", "seo"}
+PRIORITY_DAYS = 7
 SHARED_PAGE = "shared page"  # the error saved for a Facebook / Yelp / ... page
 # Google's 5xx message when the website itself failed to load, e.g.
 # "Lighthouse returned error: FAILED_DOCUMENT_REQUEST. Lighthouse was unable to ..."
@@ -230,10 +233,28 @@ def apply_pagespeed(company: Company, transport: httpx.BaseTransport | None = No
     return _save(company, check(company.website, transport))
 
 
+def _priority_first(session: Session) -> list:
+    """ORDER BY parts that put first the businesses of recent searches made for selling
+    Website or SEO work (their intent scores use PageSpeed); [] when there are none."""
+    since = datetime.now(timezone.utc) - timedelta(days=PRIORITY_DAYS)
+    jobs = session.execute(
+        select(SearchJob.id, SearchJob.params).where(SearchJob.kind == "search", SearchJob.created_at >= since)
+    ).all()
+    wanted = [
+        job_id for job_id, params in jobs
+        if isinstance(params, dict) and PRIORITY_OFFERS & set(params.get("offers") or [])
+    ]
+    if not wanted:
+        return []
+    picked = select(JobResult.company_id).where(JobResult.job_id.in_(wanted))
+    return [case((Company.id.in_(picked), 0), else_=1)]
+
+
 def check_saved_companies(session: Session, limit: int = 5,
                           transport: httpx.BaseTransport | None = None) -> int:
     """Test up to `limit` saved companies that have a website and no PageSpeed result yet,
-    oldest first, rescoring and committing each one.
+    oldest first (but those of recent Website / SEO searches before all others), rescoring
+    and committing each one.
     - Facebook / Yelp / ... pages are marked "shared page" on the way, without a test and
       without using up the limit.
     - Companies whose last try failed less than RETRY_AFTER_HOURS ago are skipped.
@@ -250,7 +271,7 @@ def check_saved_companies(session: Session, limit: int = 5,
         companies = session.scalars(
             select(Company)
             .where(Company.website.is_not(None), Company.website != "", Company.pagespeed_checked_at.is_(None))
-            .order_by(Company.created_at, Company.id)
+            .order_by(*_priority_first(session), Company.created_at, Company.id)
             .limit(max(limit, CANDIDATE_ROWS))
         ).all()
         for company in companies:

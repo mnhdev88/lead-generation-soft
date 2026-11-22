@@ -287,11 +287,11 @@ def test_create_job_find_emails_implies_enrich_and_stores_titles(client, db, fak
     assert r.status_code == 201
     job = r.json()
     assert job["enrich"] is True
-    assert job["params"] == {"find_emails": True, "titles": ["office manager", "owner"]}
+    assert job["params"] == {"find_emails": True, "titles": ["office manager", "owner"], "offers": []}
 
     r = client.post("/api/jobs", json={"query": "dentist", "location": "Lahore", "source": "fake"})
     assert r.json()["enrich"] is False
-    assert r.json()["params"] == {"find_emails": False, "titles": []}
+    assert r.json()["params"] == {"find_emails": False, "titles": [], "offers": []}
 
 
 def test_find_emails_for_search_job(client, db):

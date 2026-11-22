@@ -30,8 +30,11 @@ import {
   type LeadStatus,
   type Offer,
   type SizeBand,
+  lookingForParam,
   websiteNotRead,
 } from "@/lib/api";
+import { offersLabel } from "@/lib/offers";
+import { IntentSummaryBanner } from "@/components/IntentSummaryBanner";
 
 const PAGE_SIZE = 50;
 const COLUMNS = 12; // keep in sync with the <th> cells below (used by colSpan)
@@ -46,7 +49,7 @@ const toBool = (t: Toggle) => (t === "any" ? undefined : t === "yes");
 type CrawlFilter = "any" | EnrichStatus | "none";
 type SizeFilter = "any" | SizeBand | "unknown";
 type SortBy = NonNullable<CompanyFilters["sort"]>;
-type LookingFor = Offer | "any";
+type LookingFor = Offer[]; // [] = any (the lead's best offer)
 
 const isActive = (j: Job) => j.status === "queued" || j.status === "running";
 
@@ -106,9 +109,26 @@ export function ResultsTable({
   const [size, setSize] = useState<SizeFilter>("any");
   const [fit, setFit] = useState<"any" | "good" | "poor">("any");
   const [minScore, setMinScore] = useState(0);
-  const [lookingFor, setLookingFor] = useState<LookingFor>("any");
+  const [lookingFor, setLookingFor] = useState<LookingFor>([]);
   const [hotOnly, setHotOnly] = useState(false);
   const [sort, setSort] = useState<SortBy>("name");
+
+  // The services picked in "What are you selling?" for the search(es) shown. When a search
+  // with picks is opened, the table switches to them, best leads first.
+  const shownSearches = jobs.filter(
+    (j) => j.kind === "search" && (batchId ? j.batch_id === batchId : jobId !== null && j.id === jobId),
+  );
+  const picked = OFFERS.filter((o) => shownSearches.some((j) => j.params.offers?.includes(o)));
+  const pickedKey = `${jobId}|${batchId}|${picked.join(",")}`;
+  const [appliedKey, setAppliedKey] = useState("");
+  if (pickedKey !== appliedKey) {
+    // Adjusting state while rendering (React's pattern for "reset when a prop changes").
+    setAppliedKey(pickedKey);
+    if (picked.length > 0) {
+      setLookingFor(picked);
+      setSort("intent");
+    }
+  }
   const [paging, setPaging] = useState({ key: "", page: 0 });
   const [reloadKey, setReloadKey] = useState(0); // bump to re-read the table after our own changes
   const [data, setData] = useState<{ total: number; items: Company[] }>({ total: 0, items: [] });
@@ -132,7 +152,7 @@ export function ResultsTable({
     size_band: size === "any" ? undefined : size,
     fit: fit === "any" ? undefined : fit,
     min_score: minScore || undefined,
-    looking_for: lookingFor === "any" ? undefined : lookingFor,
+    looking_for: lookingForParam(lookingFor),
     min_intent: hotOnly ? HOT_INTENT : undefined,
     sort: sort === "name" ? undefined : sort,
   };
@@ -336,9 +356,9 @@ export function ResultsTable({
           <span className="text-[var(--muted)]">Looking for</span>
           <select
             className="input w-auto py-1"
-            value={lookingFor}
-            onChange={(e) => setLookingFor(e.target.value as LookingFor)}
-            title="Which service the lead is likely to need now (used by the Intent column, Hot only and sort)"
+            value={lookingForParam(lookingFor) ?? "any"}
+            onChange={(e) => setLookingFor(e.target.value === "any" ? [] : (e.target.value.split(",") as Offer[]))}
+            title="Which service the lead is likely to need now (used by the Intent column, Hot only and sort). Several = the best of them."
           >
             <option value="any">Any</option>
             {OFFERS.map((o) => (
@@ -346,6 +366,14 @@ export function ResultsTable({
                 {OFFER_LABEL[o]}
               </option>
             ))}
+            {[picked, lookingFor]
+              .filter((combo, i, all) => combo.length > 1 && (i === 0 || lookingForParam(combo) !== lookingForParam(all[0])))
+              .map((combo) => (
+                <option key={lookingForParam(combo)} value={lookingForParam(combo)}>
+                  {offersLabel(combo, OFFER_LABEL)}
+                  {lookingForParam(combo) === lookingForParam(picked) ? " (your picks)" : ""}
+                </option>
+              ))}
           </select>
         </label>
         <label
@@ -452,6 +480,22 @@ export function ResultsTable({
           </button>
           {busy === "bulk" && <span className="text-sm text-[var(--muted)]">Working…</span>}
         </div>
+      )}
+
+      {picked.length > 0 && (
+        <IntentSummaryBanner
+          jobId={jobId}
+          batchId={batchId}
+          offers={picked}
+          refreshKey={refreshKey}
+          running={shownSearches.some(isActive) || activeJobs.some((j) => j.kind === "enrich")}
+          hotOnly={hotOnly}
+          onShowHot={() => {
+            setLookingFor(picked);
+            setHotOnly(true);
+            setSort("intent");
+          }}
+        />
       )}
 
       {error && <p className="text-sm text-[var(--danger)]">Could not load leads: {error}. Is the backend running?</p>}
@@ -657,14 +701,25 @@ function BusinessCell({ company: c, onOpen }: { company: Company; onOpen: () => 
   );
 }
 
-/** Intent for the offer picked in "Looking for", or the lead's best offer when that is "Any".
+/** Intent for the offer picked in "Looking for" (the best of them when several are picked),
+ * or the lead's best offer when that is "Any".
  * A "?" after the score = the website was not read yet, so the score may still go up. */
 function IntentCell({ company: c, lookingFor }: { company: Company; lookingFor: LookingFor }) {
   const intent = c.intent ?? {};
   const unchecked = websiteNotRead(c);
-  if (lookingFor !== "any") {
-    const it = intent[lookingFor];
+  if (lookingFor.length === 1) {
+    const it = intent[lookingFor[0]];
     return <IntentBadge score={it?.score} reasons={it?.reasons} unchecked={unchecked} />;
+  }
+  if (lookingFor.length > 1) {
+    // The first in OFFERS wins a tie, like the backend's best offer.
+    const best = OFFERS.filter((o) => lookingFor.includes(o)).reduce((a, b) =>
+      (intent[b]?.score ?? -1) > (intent[a]?.score ?? -1) ? b : a,
+    );
+    const it = intent[best];
+    if (!it) return <Missing />;
+    if (it.score === 0) return <IntentBadge score={0} unchecked={unchecked} />;
+    return <IntentBadge score={it.score} offer={best} reasons={it.reasons} unchecked={unchecked} />;
   }
   if (!c.intent_best) {
     // All offers at 0 = no best offer. Still show "0 ?" when the website was not read yet,

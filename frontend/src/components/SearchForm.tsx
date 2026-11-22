@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type Job, type Source, type Usage } from "@/lib/api";
+import { api, OFFER_LABEL, OFFERS, type Job, type Offer, type Source, type Usage } from "@/lib/api";
+import { OFFER_CHECKS, suggestTypes } from "@/lib/offers";
 import { parseBusinessTypes, parsePlaces, placeLines } from "@/lib/searchTerms";
 
 const QUICK_CATEGORIES = ["dentist", "restaurant", "real estate", "gym", "salon", "lawyer", "hotel", "car repair"];
@@ -45,6 +46,7 @@ export function SearchForm({
   const [limit, setLimit] = useState(200);
   const [enrich, setEnrich] = useState(true);
   const [findEmails, setFindEmails] = useState(false);
+  const [offers, setOffers] = useState<Offer[]>([]); // "What are you selling?"
   const [picked, setPicked] = useState<string | null>(null); // null = use the default source
   const [sources, setSources] = useState<Source[]>(FALLBACK_SOURCES);
   const [usage, setUsage] = useState<Usage[]>([]);
@@ -83,14 +85,16 @@ export function SearchForm({
   // has a monthly cap and is relevant: already used this month, or "Find & verify emails" is ticked.
   const hunterUsage = usage.find((u) => u.provider === "hunter" && u.limit > 0 && u.configured !== false);
   const showHunter = hunterUsage !== undefined && (hunterUsage.count > 0 || findEmails);
-  // Finding emails needs the website crawl first, so it switches the crawl on.
-  const crawl = enrich || findEmails;
+  // Finding emails needs the website crawl first, and so does checking what a business needs
+  // (every intent score reads the website), so both switch the crawl on.
+  const crawl = enrich || findEmails || offers.length > 0;
 
   // What's still typed in the box counts too, so "Find leads" never drops it.
   const queries = [...new Set([...types, ...parseBusinessTypes(typeDraft)])];
   const locations = placeLines(placesText);
   const searches = queries.length * locations.length;
   const tooMany = searches > MAX_SEARCHES;
+  const suggested = suggestTypes(offers, queries);
   const googleTotal = googleRequestEstimate(limit) * Math.max(searches, 1);
   const googleLeft = googleUsage && googleUsage.limit > 0 ? Math.max(0, googleUsage.limit - googleUsage.count) : null;
 
@@ -98,6 +102,10 @@ export function SearchForm({
     const typed = parseBusinessTypes(text);
     setTypes((prev) => [...new Set([...prev, ...typed])]);
     setTypeDraft("");
+  }
+
+  function toggleOffer(offer: Offer) {
+    setOffers((prev) => (prev.includes(offer) ? prev.filter((o) => o !== offer) : [...prev, offer]));
   }
 
   function toggleType(type: string) {
@@ -128,7 +136,7 @@ export function SearchForm({
     setBusy(true);
     try {
       onCreated(
-        await api.createJobBatch({ queries, locations, limit, source, enrich: crawl, find_emails: findEmails }),
+        await api.createJobBatch({ queries, locations, limit, source, enrich: crawl, find_emails: findEmails, offers }),
       );
       setTypes(queries);
       setTypeDraft("");
@@ -142,6 +150,54 @@ export function SearchForm({
   return (
     <form onSubmit={submit} className="card space-y-4">
       <h2 className="text-base font-semibold">New local search</h2>
+
+      <fieldset className="space-y-2">
+        <legend className="label mb-1">What are you selling? (optional)</legend>
+        <div className="flex flex-wrap gap-1.5">
+          {OFFERS.map((o) => {
+            const on = offers.includes(o);
+            return (
+              <button
+                key={o}
+                type="button"
+                aria-pressed={on}
+                className={`chip ${on ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]" : ""}`}
+                onClick={() => toggleOffer(o)}
+              >
+                {on ? "✓ " : ""}
+                {OFFER_LABEL[o]}
+              </button>
+            );
+          })}
+        </div>
+        {offers.length > 0 && (
+          <div className="space-y-2 rounded-lg bg-[var(--muted-bg)] px-3 py-2 text-xs">
+            <div className="space-y-0.5 text-[var(--muted)]">
+              <span className="block font-medium text-[var(--foreground)]">We check each business for</span>
+              <ul className="list-disc space-y-0.5 pl-4">
+                {OFFERS.filter((o) => offers.includes(o)).map((o) => (
+                  <li key={o}>
+                    <strong>{OFFER_LABEL[o]}:</strong> {OFFER_CHECKS[o]}
+                  </li>
+                ))}
+              </ul>
+              <span className="block">Results open with the best leads for this first.</span>
+            </div>
+            {suggested.length > 0 && (
+              <div className="space-y-1">
+                <span className="block font-medium">Businesses that often need this</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {suggested.map((t) => (
+                    <button key={t} type="button" className="chip bg-[var(--card)]" onClick={() => toggleType(t)}>
+                      + {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </fieldset>
 
       <label className="block space-y-1">
         <span className="label">Business types</span>
@@ -306,7 +362,7 @@ export function SearchForm({
           type="checkbox"
           className="mt-0.5 accent-[var(--accent)]"
           checked={crawl}
-          disabled={findEmails}
+          disabled={findEmails || offers.length > 0}
           onChange={(e) => setEnrich(e.target.checked)}
         />
         <span>
@@ -314,6 +370,8 @@ export function SearchForm({
           <span className="block text-xs text-[var(--muted)]">
             {findEmails
               ? "Needed for finding emails, so it stays on."
+              : offers.length > 0
+                ? "Needed to check what each business needs, so it stays on."
               : "Visits each business's website after the search. Free, takes a few minutes."}
           </span>
         </span>

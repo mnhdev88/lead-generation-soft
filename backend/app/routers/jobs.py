@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
+from ..intent import OFFERS
 from ..models import SearchJob
 from ..schemas import EnrichJobRequest, FindEmailsJobRequest, JobBatchCreate, JobCreate, JobOut, SourceOut
 from ..sources import SOURCES
@@ -53,6 +54,17 @@ def list_sources():
     return out
 
 
+def _offers(offers: list[str]) -> list[str]:
+    """The services picked, in the usual order and without repeats."""
+    return [o for o in OFFERS if o in offers]
+
+
+def _crawl(body: JobCreate | JobBatchCreate) -> bool:
+    """Crawl the websites when the search ends? Finding emails needs the crawl first, and so
+    does every intent score of the services picked (app/intent.py)."""
+    return body.enrich or body.find_emails or bool(body.offers)
+
+
 @router.post("/jobs", response_model=JobOut, status_code=201)
 def create_job(body: JobCreate, session: Session = Depends(get_session)):
     _check_source(body.source)
@@ -68,8 +80,8 @@ def create_job(body: JobCreate, session: Session = Depends(get_session)):
         location=body.location.strip(),
         source=body.source,
         limit=body.limit,
-        enrich=body.enrich or body.find_emails,  # finding emails needs the websites crawled first
-        params={"find_emails": body.find_emails, "titles": titles},
+        enrich=_crawl(body),
+        params={"find_emails": body.find_emails, "titles": titles, "offers": _offers(body.offers)},
         progress_message="Waiting in queue...",
     )
     session.add(job)
@@ -97,9 +109,9 @@ def create_job_batch(body: JobBatchCreate, session: Session = Depends(get_sessio
             location=location,
             source=body.source,
             limit=body.limit,
-            enrich=body.enrich or body.find_emails,  # finding emails needs the websites crawled first
+            enrich=_crawl(body),
             batch_id=batch_id,
-            params={"find_emails": body.find_emails, "titles": []},
+            params={"find_emails": body.find_emails, "titles": [], "offers": _offers(body.offers)},
             progress_message="Waiting in queue...",
         )
         for query in queries

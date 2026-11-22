@@ -24,6 +24,7 @@ export type Job = {
     titles?: string[];
     crawl?: boolean;
     use_apollo?: boolean; // people jobs: also ask Apollo.io when the web search finds no one
+    offers?: Offer[]; // search jobs: the services you sell ("What are you selling?")
   };
   status: JobStatus;
   progress_message: string | null;
@@ -531,7 +532,9 @@ export type CompanyFilters = {
   min_score?: number;
   size_band?: SizeBand | "unknown"; // "unknown" = size not worked out
   fit?: "good" | "poor"; // your ideal customer (Quality page)
-  looking_for?: Offer | "any"; // the offer min_intent and sort "intent" use ("any" = best offer)
+  // The offer(s) min_intent and sort "intent" use: "seo", or "website,seo" (best of those);
+  // "any" = the lead's best offer. Build it with lookingForParam().
+  looking_for?: string;
   min_intent?: number;
   exported?: boolean; // false = never exported (CSV / Excel / Google Sheets)
   sort?: "name" | "score" | "rating" | "employees" | "intent"; // default "name"; the others sort high to low
@@ -572,7 +575,22 @@ export type NewJobBatch = {
   source: string;
   enrich: boolean;
   find_emails?: boolean;
+  offers?: Offer[]; // the services you sell: results open on them (and the crawl runs)
 };
+
+/** What a search found for the services you sell (GET /api/companies/intent-summary). */
+export type IntentSummary = {
+  total: number;
+  any_hot: number; // hot for at least one of the services asked about
+  website_not_read: number; // websites not crawled yet: their scores may go up
+  speed_pending: number; // websites not tested by Google PageSpeed yet (Website / SEO scores)
+  offers: { offer: Offer; hot: number; warm: number; top_reasons: { reason: string; count: number }[] }[];
+};
+
+/** looking_for for several offers: [] -> undefined (any), ["website", "seo"] -> "website,seo". */
+export function lookingForParam(offers: readonly Offer[]): string | undefined {
+  return offers.length ? OFFERS.filter((o) => offers.includes(o)).join(",") : undefined;
+}
 
 type QueryValue = string | number | boolean | undefined;
 
@@ -696,6 +714,8 @@ export const api = {
   // ----- companies -----
   listCompanies: (filters: CompanyFilters, limit: number, offset: number) =>
     request<{ total: number; items: Company[] }>(`/api/companies?${filtersToQuery(filters, { limit, offset })}`),
+  intentSummary: (filters: { job_id?: number; batch_id?: string; looking_for?: string }) =>
+    request<IntentSummary>(`/api/companies/intent-summary?${filtersToQuery(filters)}`),
   getCompany: (id: number) => request<Company>(`/api/companies/${id}`),
   updateCompany: (id: number, body: { lead_status?: LeadStatus }) =>
     request<Company>(`/api/companies/${id}`, patch(body)),

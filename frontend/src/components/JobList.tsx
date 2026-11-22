@@ -1,7 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { api, type Job, type JobStatus } from "@/lib/api";
+import { api, OFFER_LABEL, type Job, type JobStatus } from "@/lib/api";
+import { offersLabel } from "@/lib/offers";
+
+/** " · for Website + SEO" when the search was made with "What are you selling?" picks. */
+const forOffers = (job: Job | undefined) =>
+  job?.params.offers?.length ? ` · for ${offersLabel(job.params.offers, OFFER_LABEL)}` : "";
 
 const STATUS_STYLE: Record<JobStatus, string> = {
   queued: "badge-muted",
@@ -131,7 +136,10 @@ export function JobList({
                       {search.status === "done" ? search.result_count : search.status}
                     </span>
                   </div>
-                  <p className="mt-0.5 text-[11px] text-[var(--muted)]">{SOURCE_LABEL[search.source] ?? search.source}</p>
+                  <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+                    {SOURCE_LABEL[search.source] ?? search.source}
+                    {forOffers(search)}
+                  </p>
                   {isActive(search) && search.progress_message && (
                     <p className="mt-1 truncate text-xs text-[var(--muted)]">{search.progress_message}</p>
                   )}
@@ -280,7 +288,8 @@ function BatchGroup({
         </div>
         <p className="truncate text-sm">{places.join(" · ")}</p>
         <p className="mt-0.5 text-[11px] text-[var(--muted)]">
-          {SOURCE_LABEL[members[0]?.source] ?? members[0]?.source} · all results together
+          {SOURCE_LABEL[members[0]?.source] ?? members[0]?.source}
+          {forOffers(members[0])} · all results together
         </p>
         {running?.progress_message && <p className="mt-1 truncate text-xs text-[var(--muted)]">{running.progress_message}</p>}
       </button>
