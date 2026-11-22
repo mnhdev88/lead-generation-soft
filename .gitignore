@@ -19,3 +19,5 @@ backend/*.json
 # Node
 frontend/node_modules/
 frontend/.next/
+
+.vscode/
