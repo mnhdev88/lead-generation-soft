@@ -115,6 +115,13 @@ ratings), but needs an API key:
 
 7. Restart the backend. "Google Maps" can now be picked in the search form.
 
+**Google reviews (min / max)** in the search form keeps only businesses with that many Google
+reviews, e.g. 10-100 for established small businesses that are still behind their competitors.
+Leave a box empty for no limit; a business without reviews counts as 0. The others are not saved
+or crawled, but Google still bills the requests that found them, and the competitor comparison
+("fewer reviews than competitors") still uses the whole search. OpenStreetMap has no reviews, so
+the filter is ignored there.
+
 `GOOGLE_PLACES_MONTHLY_LIMIT` (default 900) caps the requests per calendar month so you stay
 inside Google's free allowance. The search form shows how many you have used. When the cap is
 reached, a search keeps the businesses found so far and says so.

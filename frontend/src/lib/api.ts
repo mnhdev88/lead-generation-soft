@@ -25,6 +25,8 @@ export type Job = {
     crawl?: boolean;
     use_apollo?: boolean; // people jobs: also ask Apollo.io when the web search finds no one
     offers?: Offer[]; // search jobs: the services you sell ("What are you selling?")
+    min_reviews?: number; // search jobs: keep only businesses with this many Google reviews or more
+    max_reviews?: number; // ...and this many or fewer
   };
   status: JobStatus;
   progress_message: string | null;
@@ -576,6 +578,8 @@ export type NewJobBatch = {
   enrich: boolean;
   find_emails?: boolean;
   offers?: Offer[]; // the services you sell: results open on them (and the crawl runs)
+  min_reviews?: number | null; // Google Maps only: keep businesses with at least this many reviews
+  max_reviews?: number | null; // ...and at most this many
 };
 
 /** What a search found for the services you sell (GET /api/companies/intent-summary). */

@@ -6,7 +6,17 @@ import { offersLabel } from "@/lib/offers";
 
 /** " · for Website + SEO" when the search was made with "What are you selling?" picks. */
 const forOffers = (job: Job | undefined) =>
-  job?.params.offers?.length ? ` · for ${offersLabel(job.params.offers, OFFER_LABEL)}` : "";
+  (job?.params.offers?.length ? ` · for ${offersLabel(job.params.offers, OFFER_LABEL)}` : "") + reviewRange(job);
+
+/** " · 10-100 reviews" when the search kept only a Google review count range. */
+function reviewRange(job: Job | undefined): string {
+  const low = job?.params.min_reviews;
+  const high = job?.params.max_reviews;
+  if (low != null && high != null) return ` · ${low}-${high} reviews`;
+  if (low != null) return ` · ${low}+ reviews`;
+  if (high != null) return ` · up to ${high} reviews`;
+  return "";
+}
 
 const STATUS_STYLE: Record<JobStatus, string> = {
   queued: "badge-muted",

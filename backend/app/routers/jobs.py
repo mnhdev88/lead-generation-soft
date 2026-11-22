@@ -59,6 +59,11 @@ def _offers(offers: list[str]) -> list[str]:
     return [o for o in OFFERS if o in offers]
 
 
+def _review_range(body: JobCreate | JobBatchCreate) -> dict:
+    """{"min_reviews": 10, "max_reviews": 100} for params; only the limits that are set."""
+    return {k: v for k, v in (("min_reviews", body.min_reviews), ("max_reviews", body.max_reviews)) if v is not None}
+
+
 def _crawl(body: JobCreate | JobBatchCreate) -> bool:
     """Crawl the websites when the search ends? Finding emails needs the crawl first, and so
     does every intent score of the services picked (app/intent.py)."""
@@ -81,7 +86,8 @@ def create_job(body: JobCreate, session: Session = Depends(get_session)):
         source=body.source,
         limit=body.limit,
         enrich=_crawl(body),
-        params={"find_emails": body.find_emails, "titles": titles, "offers": _offers(body.offers)},
+        params={"find_emails": body.find_emails, "titles": titles, "offers": _offers(body.offers),
+                **_review_range(body)},
         progress_message="Waiting in queue...",
     )
     session.add(job)
@@ -111,7 +117,8 @@ def create_job_batch(body: JobBatchCreate, session: Session = Depends(get_sessio
             limit=body.limit,
             enrich=_crawl(body),
             batch_id=batch_id,
-            params={"find_emails": body.find_emails, "titles": [], "offers": _offers(body.offers)},
+            params={"find_emails": body.find_emails, "titles": [], "offers": _offers(body.offers),
+                    **_review_range(body)},
             progress_message="Waiting in queue...",
         )
         for query in queries

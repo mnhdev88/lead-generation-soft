@@ -47,6 +47,9 @@ export function SearchForm({
   const [enrich, setEnrich] = useState(true);
   const [findEmails, setFindEmails] = useState(false);
   const [offers, setOffers] = useState<Offer[]>([]); // "What are you selling?"
+  // Google review count range ("" = no limit). Google Maps only: OpenStreetMap has no reviews.
+  const [minReviews, setMinReviews] = useState("");
+  const [maxReviews, setMaxReviews] = useState("");
   const [picked, setPicked] = useState<string | null>(null); // null = use the default source
   const [sources, setSources] = useState<Source[]>(FALLBACK_SOURCES);
   const [usage, setUsage] = useState<Usage[]>([]);
@@ -96,6 +99,9 @@ export function SearchForm({
   const tooMany = searches > MAX_SEARCHES;
   const suggested = suggestTypes(offers, queries);
   const googleTotal = googleRequestEstimate(limit) * Math.max(searches, 1);
+  const reviewMin = isGoogle ? reviewCount(minReviews) : null;
+  const reviewMax = isGoogle ? reviewCount(maxReviews) : null;
+  const reviewRangeBad = reviewMin !== null && reviewMax !== null && reviewMin > reviewMax;
   const googleLeft = googleUsage && googleUsage.limit > 0 ? Math.max(0, googleUsage.limit - googleUsage.count) : null;
 
   function addTypes(text: string) {
@@ -133,10 +139,17 @@ export function SearchForm({
       return;
     }
     if (tooMany) return; // the message is already showing
+    if (reviewRangeBad) {
+      setError("Min reviews can't be more than max reviews.");
+      return;
+    }
     setBusy(true);
     try {
       onCreated(
-        await api.createJobBatch({ queries, locations, limit, source, enrich: crawl, find_emails: findEmails, offers }),
+        await api.createJobBatch({
+          queries, locations, limit, source, enrich: crawl, find_emails: findEmails, offers,
+          min_reviews: reviewMin, max_reviews: reviewMax,
+        }),
       );
       setTypes(queries);
       setTypeDraft("");
@@ -357,6 +370,39 @@ export function SearchForm({
         </p>
       )}
 
+      {isGoogle && (
+        <fieldset className="space-y-1">
+          <legend className="label mb-1">Google reviews</legend>
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              className="input"
+              type="number"
+              min={0}
+              inputMode="numeric"
+              placeholder="Min (any)"
+              aria-label="Minimum Google reviews"
+              value={minReviews}
+              onChange={(e) => setMinReviews(e.target.value)}
+            />
+            <input
+              className="input"
+              type="number"
+              min={0}
+              inputMode="numeric"
+              placeholder="Max (any)"
+              aria-label="Maximum Google reviews"
+              value={maxReviews}
+              onChange={(e) => setMaxReviews(e.target.value)}
+            />
+          </div>
+          <p className={`text-xs ${reviewRangeBad ? "text-[var(--warn)]" : "text-[var(--muted)]"}`}>
+            {reviewRangeBad
+              ? "Min can't be more than max."
+              : "Keep only businesses with this many reviews. Leave empty for any. Businesses outside the range are not saved or crawled (Google still counts the requests)."}
+          </p>
+        </fieldset>
+      )}
+
       <label className="flex cursor-pointer items-start gap-2.5 text-sm">
         <input
           type="checkbox"
@@ -443,4 +489,10 @@ function UsageMeter({ usage, label, fullMessage }: { usage: Usage; label: string
       {pct >= 100 && <p className="text-xs text-[var(--danger)]">{fullMessage}</p>}
     </div>
   );
+}
+
+/** "25" -> 25, "" or junk -> null (no limit). */
+function reviewCount(text: string): number | null {
+  const n = Number(text.trim());
+  return text.trim() !== "" && Number.isInteger(n) && n >= 0 ? n : null;
 }

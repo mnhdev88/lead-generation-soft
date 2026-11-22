@@ -254,6 +254,32 @@ def _look_up_ppp(company: Company) -> None:
         log.exception("PPP lookup for company %s failed", company.id)
 
 
+def _review_range(job: SearchJob) -> tuple[int | None, int | None]:
+    """(min_reviews, max_reviews) the search keeps, from the job's params. None = no limit."""
+    params = job.params or {}
+
+    def limit(key: str) -> int | None:
+        value = params.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    return limit("min_reviews"), limit("max_reviews")
+
+
+def _in_review_range(r: CompanyResult, low: int | None, high: int | None) -> bool:
+    """Google leaves the count out when a business has no reviews: that counts as 0."""
+    count = r.reviews_count or 0
+    return (low is None or count >= low) and (high is None or count <= high)
+
+
+def _review_range_text(low: int | None, high: int | None) -> str:
+    """'10-100 reviews', '10+ reviews', 'at most 100 reviews'"""
+    if low is not None and high is not None:
+        return f"{low}-{high} Google reviews"
+    if low is not None:
+        return f"{low}+ Google reviews"
+    return f"at most {high} Google reviews"
+
+
 def run_search_job(session, job: SearchJob) -> None:
     warnings: list[str] = []
 
@@ -288,7 +314,21 @@ def run_search_job(session, job: SearchJob) -> None:
     peers = _peer_medians(results)  # for "fewer reviews than competitors" (app/intent.py)
     # Positions only mean something in one small Google query (see RANK_MAX_RESULTS).
     save_rank = source.name == "google" and job.limit is not None and job.limit <= RANK_MAX_RESULTS
-    for position, r in enumerate(results, start=1):
+    # The review range is applied after the competitor numbers and positions above, which
+    # must come from the whole search (the businesses we skip are still the competition).
+    low, high = _review_range(job)
+    review_note = None
+    if low is not None or high is not None:
+        if source.name == "google":
+            kept = [(pos, r) for pos, r in enumerate(results, start=1) if _in_review_range(r, low, high)]
+            skipped = len(results) - len(kept)
+            review_note = f"Kept {_review_range_text(low, high)}" + (f", skipped {skipped}." if skipped else ".")
+        else:  # OpenStreetMap has no reviews: nothing to filter on
+            kept = list(enumerate(results, start=1))
+            review_note = "The review filter only works with Google Maps, so it was not used."
+    else:
+        kept = list(enumerate(results, start=1))
+    for position, r in kept:
         company = _upsert_company(session, source.name, r)
         # The same business saved before (e.g. found on OpenStreetMap, now on Google)?
         company, removed_id = merge_if_duplicate(session, company)
@@ -321,6 +361,8 @@ def run_search_job(session, job: SearchJob) -> None:
     message = f"Found {len(seen)} businesses."
     if merged:
         message += f" Merged {merged} duplicate{'s' if merged != 1 else ''} with businesses already saved."
+    if review_note:
+        message += " " + review_note
 
     # "Also find emails": queue a website crawl of these results.
     if job.enrich and seen:

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _as_utc(d: datetime) -> datetime:
@@ -27,8 +27,24 @@ SizeBand = Literal["solo", "small", "medium", "large"]  # app/sizing.py
 # which every intent score needs, and opens the results on those services.
 Offer = Literal["website", "seo", "software", "marketing"]
 
+# Google review count range of a search (Google Maps only: OpenStreetMap has no reviews).
+ReviewCount = Annotated[int | None, Field(default=None, ge=0, le=1_000_000)]
 
-class JobCreate(BaseModel):
+
+class ReviewRange(BaseModel):
+    """Keep only businesses with min_reviews..max_reviews Google reviews (both optional)."""
+
+    min_reviews: ReviewCount = None
+    max_reviews: ReviewCount = None
+
+    @model_validator(mode="after")
+    def _min_not_above_max(self):
+        if self.min_reviews is not None and self.max_reviews is not None and self.min_reviews > self.max_reviews:
+            raise ValueError("Min reviews can't be more than max reviews.")
+        return self
+
+
+class JobCreate(ReviewRange):
     query: str = Field(min_length=2, max_length=200, examples=["dentist"])
     location: str = Field(min_length=2, max_length=200, examples=["Karachi, Pakistan"])
     source: str = "osm"
@@ -44,7 +60,7 @@ class JobCreate(BaseModel):
 SearchTerm = Annotated[str, Field(min_length=2, max_length=200)]
 
 
-class JobBatchCreate(BaseModel):
+class JobBatchCreate(ReviewRange):
     """One search per combination of business type and place, started together."""
 
     queries: list[SearchTerm] = Field(min_length=1, max_length=25, examples=[["dentist", "gym"]])
