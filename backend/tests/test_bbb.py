@@ -26,7 +26,7 @@ def result(title="Smile Dental | Better Business Bureau® Profile", url=URL, sni
 
 
 def test_query():
-    assert bbb.query(us_company()) == 'site:bbb.org/us "Smile Dental" Austin TX'
+    assert bbb.query(us_company()) == "site:bbb.org Smile Dental Austin TX"
 
 
 def test_reads_accredited_profile():
@@ -35,6 +35,20 @@ def test_reads_accredited_profile():
     facts = bbb.parse_results([result(snippet=snippet)], us_company())
     assert facts == {"found": True, "url": URL, "name": "Smile Dental", "accredited": True,
                      "accredited_since": "5/30/2008", "rating": "A+", "complaints": 4, "started": 1998}
+
+
+def test_real_serper_snippets():
+    """Snippets as Serper (Google) returned them."""
+    glued = result(snippet="Dentist in Austin, TX. (512) 345-0400. BBB Rating A+More · 800 Austin TX 78701")
+    assert bbb.parse_results([glued], us_company())["rating"] == "A+"
+    since = result(snippet="BBB Accredited since 6/12/2007. Phone: (512) 345-9973. Dentist in Austin, TX. "
+                           "See BBB rating, reviews, complaints, get a quote and ...")
+    facts = bbb.parse_results([since], us_company())
+    assert facts["accredited"] is True and facts["accredited_since"] == "6/12/2007" and facts["rating"] is None
+    not_acc = result(snippet="Smile Dental is NOT a BBB Accredited Business. To become accredited, a business must "
+                             "agree to BBB Standards for Trust")
+    assert bbb.parse_results([not_acc], us_company())["accredited"] is False
+    assert bbb.parse_results([result(snippet="BBB Rating Average service")], us_company())["rating"] is None
 
 
 def test_not_accredited_and_not_rated():

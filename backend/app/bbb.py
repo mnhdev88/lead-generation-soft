@@ -3,7 +3,7 @@
 We never open bbb.org (its terms forbid scraping). One web search (app/providers/websearch.py)
 is asked for e.g.
 
-    site:bbb.org/us "Smile Dental" Austin TX
+    site:bbb.org Smile Dental Austin TX
 
 and the results' links, titles and snippets are read here:
 
@@ -40,7 +40,9 @@ ACCREDITED_RE = re.compile(r"\bBBB\s+accredited\s+business\b|\baccredited\s+sinc
 # Letter grades. Case-sensitive so "a rating" in a sentence is not an A.
 GRADE = r"(A\+|A-|A|B\+|B-|B|C\+|C-|C|D\+|D-|D|F|NR)"
 RATING_RES = [
-    re.compile(r"\bBBB\s+[Rr]ating\s*(?:is|of|:)?\s*" + GRADE + r"(?![\w+-])"),
+    # "BBB Rating: A+", and as some snippets glue it to the next word, "BBB Rating A+More"
+    # (after a + or - anything may follow; after a bare letter no lower-case letter may).
+    re.compile(r"\bBBB\s+[Rr]ating\s*(?:is|of|:)?\s*" + GRADE + r"(?:(?<=[+-])|(?![a-z0-9]))"),
     re.compile(r"(?<![\w+-])" + GRADE + r"\s+(?:BBB\s+)?[Rr]at(?:ing|ed)\b"),
 ]
 NOT_RATED_RE = re.compile(r"\bnot\s+rated\b", re.I)
@@ -57,13 +59,14 @@ MANY_COMPLAINTS = 3  # this many complaints or more is worth mentioning on a cal
 
 
 def query(company) -> str:
-    """'site:bbb.org/us "Smile Dental" Austin TX'"""
+    """'site:bbb.org Smile Dental Austin TX'. No quotes and no path after the domain: with them
+    Serper (Google) finds nothing at all. parse_results() checks the name and state instead."""
     from .ppp import us_location
 
     state, _ = us_location(company)
     place = " ".join(p for p in (company.city, state) if p)
     name = " ".join((company.name or "").replace('"', " ").split())
-    return " ".join(p for p in ("site:bbb.org/us", f'"{name}"', place) if p)
+    return " ".join(p for p in ("site:bbb.org", name, place) if p)
 
 
 def _title_name(title: str) -> str:

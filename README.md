@@ -391,7 +391,7 @@ It reads the states' own free open data (no key needed, `backend/app/sources/fil
 
 **Check BBB** (ticked rows, or in a business's panel) looks up each US business's BBB profile with
 the same web search key (`BRAVE_API_KEY` or `SERPER_API_KEY`), one search per business, e.g.
-`site:bbb.org/us "Smile Dental" Austin TX`. We never open bbb.org (its terms forbid scraping):
+`site:bbb.org Smile Dental Austin TX`. We never open bbb.org (its terms forbid scraping):
 only the search results' links, titles and snippets are read (`backend/app/bbb.py`).
 
 A profile counts only when its link is a BBB business profile, its name is this business's name
