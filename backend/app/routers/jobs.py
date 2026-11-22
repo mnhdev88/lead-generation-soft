@@ -8,7 +8,7 @@ from ..db import get_session
 from ..intent import OFFERS
 from ..models import SearchJob
 from ..schemas import EnrichJobRequest, FindEmailsJobRequest, JobBatchCreate, JobCreate, JobOut, SourceOut
-from ..sources import SOURCES
+from ..sources import SOURCES, SourceError, filings
 
 router = APIRouter(prefix="/api", tags=["search"])
 
@@ -25,6 +25,17 @@ def _check_source(name: str) -> None:
     reason = source.unavailable_reason()
     if reason:
         raise HTTPException(400, reason)
+
+
+def _check_places(source: str, locations: list[str]) -> None:
+    """New business filings exist for a few states only: say so before queuing the search."""
+    if source != "filings":
+        return
+    for location in locations:
+        try:
+            filings.parse_location(location)
+        except SourceError as e:
+            raise HTTPException(400, str(e)) from e
 
 
 def _unique_terms(terms: list[str]) -> list[str]:
@@ -60,8 +71,12 @@ def _offers(offers: list[str]) -> list[str]:
 
 
 def _review_range(body: JobCreate | JobBatchCreate) -> dict:
-    """{"min_reviews": 10, "max_reviews": 100} for params; only the limits that are set."""
-    return {k: v for k, v in (("min_reviews", body.min_reviews), ("max_reviews", body.max_reviews)) if v is not None}
+    """Extra params: {"min_reviews": 10, "max_reviews": 100} (only the limits that are set) and,
+    for new business filings, {"filed_days": 30, "match_google": True}."""
+    extra = {k: v for k, v in (("min_reviews", body.min_reviews), ("max_reviews", body.max_reviews)) if v is not None}
+    if body.source == "filings":
+        extra.update(filed_days=body.filed_days, match_google=body.match_google)
+    return extra
 
 
 def _crawl(body: JobCreate | JobBatchCreate) -> bool:
@@ -73,6 +88,7 @@ def _crawl(body: JobCreate | JobBatchCreate) -> bool:
 @router.post("/jobs", response_model=JobOut, status_code=201)
 def create_job(body: JobCreate, session: Session = Depends(get_session)):
     _check_source(body.source)
+    _check_places(body.source, [body.location])
     # Job titles the user is looking for: "  Office Manager " -> "office manager"
     titles = []
     for t in body.titles:
@@ -104,6 +120,7 @@ def create_job_batch(body: JobBatchCreate, session: Session = Depends(get_sessio
     locations = _unique_terms(body.locations)
     if not queries or not locations:
         raise HTTPException(400, "Add at least one business type and one place.")
+    _check_places(body.source, locations)
     total = len(queries) * len(locations)
     if total > MAX_BATCH_SEARCHES:
         raise HTTPException(400, f"That is {total} searches. Start at most {MAX_BATCH_SEARCHES} at a time.")

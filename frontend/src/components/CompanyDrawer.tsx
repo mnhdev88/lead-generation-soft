@@ -484,6 +484,7 @@ export function CompanyDrawer({
               <PeopleSection contacts={company.contacts} companyName={company.name} onBounced={reportBounced} />
               <GoogleProfileSection company={company} />
               <BbbSection company={company} />
+              <FilingSection company={company} />
               <WebsiteSection company={company} />
               <ActivitySection
                 company={company}
@@ -934,6 +935,36 @@ function GoogleProfileSection({ company: c }: { company: Company }) {
       ))}
       {speedOk && ps.checked_at && typeof ps.performance === "number" && (
         <p className="text-[11px] text-[var(--muted)]">Speed checked {formatDate(ps.checked_at)}</p>
+      )}
+    </Section>
+  );
+}
+
+const STATE_NAME: Record<string, string> = { CO: "Colorado", NY: "New York", CT: "Connecticut", OR: "Oregon" };
+
+/** "2026-11-21" -> "11/21/2026" (the viewer's style), without shifting the day by time zone. */
+function plainDate(day: string) {
+  const d = new Date(`${day.slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { timeZone: "UTC" });
+}
+
+/** A state business filing: when it was registered and who the filing names. */
+function FilingSection({ company: c }: { company: Company }) {
+  const f = c.filing ?? {};
+  if (!f.state) return null;
+  const facts: [string, React.ReactNode][] = [];
+  if (f.filed) facts.push(["Registered", `${plainDate(f.filed)} in ${STATE_NAME[f.state] ?? f.state}`]);
+  if (f.entity_type) facts.push(["Type", f.entity_type]);
+  if (f.industry) facts.push(["Industry", f.industry]);
+  if (f.county) facts.push(["County", f.county]);
+  for (const p of f.people ?? []) facts.push([p.role || "Named in the filing", p.name]);
+  return (
+    <Section title="State filing">
+      <FactList facts={facts} />
+      {f.url && SAFE_LINK.test(f.url) && (
+        <a className="text-sm text-[var(--accent)] hover:underline" href={f.url} target="_blank" rel="noopener noreferrer">
+          Open the state&apos;s record ↗
+        </a>
       )}
     </Section>
   );

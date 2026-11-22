@@ -44,7 +44,15 @@ class ReviewRange(BaseModel):
         return self
 
 
-class JobCreate(ReviewRange):
+class SearchOptions(ReviewRange):
+    """Options of some sources. New business filings (app/sources/filings.py): how many days
+    back (filed_days) and whether to look each one up on Google Maps (match_google)."""
+
+    filed_days: int = Field(default=30, ge=1, le=365)
+    match_google: bool = False
+
+
+class JobCreate(SearchOptions):
     query: str = Field(min_length=2, max_length=200, examples=["dentist"])
     location: str = Field(min_length=2, max_length=200, examples=["Karachi, Pakistan"])
     source: str = "osm"
@@ -60,7 +68,7 @@ class JobCreate(ReviewRange):
 SearchTerm = Annotated[str, Field(min_length=2, max_length=200)]
 
 
-class JobBatchCreate(ReviewRange):
+class JobBatchCreate(SearchOptions):
     """One search per combination of business type and place, started together."""
 
     queries: list[SearchTerm] = Field(min_length=1, max_length=25, examples=[["dentist", "gym"]])
@@ -248,6 +256,7 @@ class CompanyOut(BaseModel):
     pagespeed: dict = {}  # mobile PageSpeed (app/pagespeed.py), {} = not checked
     bbb: dict = {}  # Better Business Bureau facts (app/bbb.py), {} = not checked
     bbb_checked_at: UtcDatetime | None = None
+    filing: dict = {}  # a state business filing (app/sources/filings.py), {} = none
     list_ids: list[int] = []  # lists this company is in (filled by the router)
     do_not_contact: str | None = None  # why it is on the do-not-contact list (filled by the router)
     # Who hosts its email, e.g. "Google Workspace" (app/emails/hosting.py; filled by the router)
@@ -263,7 +272,7 @@ class CompanyOut(BaseModel):
         return v or []
 
     @field_validator("socials", "website_signals", "email_statuses", "ppp", "intent", "review_signals",
-                     "pagespeed", "phone_lookup", "bbb", mode="before")
+                     "pagespeed", "phone_lookup", "bbb", "filing", mode="before")
     @classmethod
     def _none_to_dict(cls, v):
         return v or {}

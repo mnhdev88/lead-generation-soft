@@ -27,6 +27,8 @@ export type Job = {
     offers?: Offer[]; // search jobs: the services you sell ("What are you selling?")
     min_reviews?: number; // search jobs: keep only businesses with this many Google reviews or more
     max_reviews?: number; // ...and this many or fewer
+    filed_days?: number; // new business filings: registered in the last N days
+    match_google?: boolean; // new business filings: looked up on Google Maps
   };
   status: JobStatus;
   progress_message: string | null;
@@ -200,6 +202,18 @@ export type Bbb = {
   rating?: string | null; // "A+" ... "F", or "NR" (not rated)
   complaints?: number | null;
   started?: number | null; // year the business started
+};
+
+// A state business filing (backend/app/sources/filings.py). Empty {} = none.
+export type Filing = {
+  state?: string; // "CO" | "NY" | "CT" | "OR"
+  filed?: string | null; // "2026-11-21"
+  entity_type?: string | null;
+  registry_id?: string | null;
+  people?: { name: string; role?: string | null }[];
+  industry?: string | null; // Connecticut: from the NAICS code
+  county?: string | null;
+  url?: string | null; // the state's page about it (Oregon)
 };
 
 // What a lead is likely to buy now (backend/app/intent.py).
@@ -447,6 +461,7 @@ export type Company = {
   pagespeed: PageSpeed;
   bbb?: Bbb;
   bbb_checked_at?: string | null;
+  filing?: Filing;
   // The kind of business intent.py scores booking / ordering / shop / payment for
   // (business_kind() there). Missing or null = unknown: then we never say one is "not found".
   business_kind?: BusinessKind | null;
@@ -595,6 +610,8 @@ export type NewJobBatch = {
   offers?: Offer[]; // the services you sell: results open on them (and the crawl runs)
   min_reviews?: number | null; // Google Maps only: keep businesses with at least this many reviews
   max_reviews?: number | null; // ...and at most this many
+  filed_days?: number; // new business filings: registered in the last N days
+  match_google?: boolean; // new business filings: look each one up on Google Maps
 };
 
 /** What a search found for the services you sell (GET /api/companies/intent-summary). */

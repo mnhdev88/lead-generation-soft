@@ -73,6 +73,7 @@ HUNTER_PATTERN_CONFIDENCE = 75  # Hunter's own guess of a domain's email pattern
 APOLLO_VERIFIED_CONFIDENCE = 80  # an email Apollo.io says it verified
 APOLLO_PEOPLE_PER_COMPANY = 2  # Apollo lookups per company (1 credit each)
 WEB_SEARCH_RESULTS = 10  # results read per web search
+GOOGLE_MATCH_RESULTS = 5  # Google Maps results read when looking up a new business filing
 WEB_SEARCH_MAX_FAILURES = 3  # web search errors in a row before the job stops using it
 
 # While no job is waiting, older companies get a size estimate and a PPP lookup, this many
@@ -281,6 +282,76 @@ def _review_range_text(low: int | None, high: int | None) -> str:
     return f"at most {high} Google reviews"
 
 
+def _save_filing(company: Company, r: CompanyResult) -> None:
+    """A state filing (app/sources/filings.py): keep its facts and the people it names."""
+    filing = r.raw.get("filing") if isinstance(r.raw, dict) else None
+    if not isinstance(filing, dict):
+        return
+    company.filing = dict(filing)
+    for person in filing.get("people") or []:
+        if isinstance(person, dict) and person.get("name"):
+            _save_found_person(company, name=person["name"], title=person.get("role"), linkedin_url=None,
+                               source_url=filing.get("url"), source="registry")
+
+
+# A Google Maps result is this filing's business when the names agree and it is in the same state.
+_GOOGLE_STATE_RE = r",\s*{state}\s+\d{{5}}"
+
+
+def _google_match(results: list[CompanyResult], company: Company) -> CompanyResult | None:
+    from .dedupe import same_name
+
+    state = (company.filing or {}).get("state")
+    for r in results:
+        if state and not re.search(_GOOGLE_STATE_RE.format(state=state), r.address or ""):
+            continue
+        if same_name(r.name, company.name) or linkedin.same_company(r.name, company):
+            return r
+    return None
+
+
+def _match_filings_on_google(session, seen: set[int], progress) -> str:
+    """Look up each new filing on Google Maps by its name and town; a match is merged with the
+    filing (the Google listing brings the phone, website, reviews...). Returns a short note."""
+    from .dedupe import merge_companies
+
+    google = SOURCES.get("google")
+    reason = google.unavailable_reason() if google else "Google Maps is not set up"
+    if reason:
+        return "Not looked up on Google Maps: " + reason.rstrip(".") + "."
+    todo = [session.get(Company, cid) for cid in sorted(seen)]
+    todo = [c for c in todo if c is not None and c.source == "filings"]
+    matched = 0
+    stopped = None
+    for i, company in enumerate(todo, start=1):
+        progress(f"Finding new businesses on Google Maps: {i} of {len(todo)}...")
+        state = (company.filing or {}).get("state") or ""
+        place = ", ".join(p for p in (company.city, state) if p)
+        try:
+            results = google.search(f'"{company.name}"', place, GOOGLE_MATCH_RESULTS, lambda _msg: None)
+        except SourceError as e:
+            stopped = str(e)
+            break
+        r = _google_match(results, company)
+        if r is None:
+            continue
+        listing = _upsert_company(session, "google", r)
+        if listing.id == company.id:
+            continue
+        keep, drop = (listing, company) if listing.id < company.id else (company, listing)
+        drop_id = drop.id
+        keep = merge_companies(session, keep, drop, "the same business: state filing and Google Maps")
+        seen.discard(drop_id)
+        seen.add(keep.id)
+        matched += 1
+        session.commit()
+    note = f"Found {matched} of {len(todo)} new businesses on Google Maps"
+    note += f" (the other {len(todo) - matched} have no phone yet)." if matched < len(todo) else "."
+    if stopped:
+        note += f" Stopped looking: {stopped}"
+    return note
+
+
 def run_search_job(session, job: SearchJob) -> None:
     warnings: list[str] = []
 
@@ -297,7 +368,11 @@ def run_search_job(session, job: SearchJob) -> None:
     if reason:
         raise SourceError(reason)
 
-    results = source.search(job.query, job.location, job.limit, progress)
+    params = job.params or {}
+    if source.name == "filings":  # new business filings: how many days back
+        results = source.search(job.query, job.location, job.limit, progress, days=params.get("filed_days"))
+    else:
+        results = source.search(job.query, job.location, job.limit, progress)
     progress(f"Saving {len(results)} businesses...")
     # Load the companies we already have (with their people, which rescore() reads) in a
     # few queries, instead of one extra query per company.
@@ -331,6 +406,8 @@ def run_search_job(session, job: SearchJob) -> None:
         kept = list(enumerate(results, start=1))
     for position, r in kept:
         company = _upsert_company(session, source.name, r)
+        if source.name == "filings":
+            _save_filing(company, r)
         # The same business saved before (e.g. found on OpenStreetMap, now on Google)?
         company, removed_id = merge_if_duplicate(session, company)
         if check_ppp and company.ppp_checked_at is None:
@@ -349,6 +426,10 @@ def run_search_job(session, job: SearchJob) -> None:
         if company.id not in seen:
             seen.add(company.id)
             session.merge(JobResult(job_id=job.id, company_id=company.id))
+    # New business filings have no phone or website: find them on Google Maps (one request each).
+    google_note = None
+    if source.name == "filings" and params.get("match_google") and seen:
+        google_note = _match_filings_on_google(session, seen, progress)
     # Branches of one business were saved one by one (the first saw no others yet): size
     # them all again together, so each shows the same number of locations.
     if domains:
@@ -364,6 +445,8 @@ def run_search_job(session, job: SearchJob) -> None:
         message += f" Merged {merged} duplicate{'s' if merged != 1 else ''} with businesses already saved."
     if review_note:
         message += " " + review_note
+    if google_note:
+        message += " " + google_note
 
     # "Also find emails": queue a website crawl of these results.
     if job.enrich and seen:

@@ -18,7 +18,8 @@ Precision first: a point is only given when we are sure of the fact behind it.
 Services and their points
     website    no website +30, only a Facebook / free page +25, no SSL +15, copyright 3+ years
                old +10, slow on mobile (PageSpeed < 50 +15, 50-69 +8), not mobile-friendly
-               +10, DIY website builder +10, possibly a new business +20
+               +10, DIY website builder +10, registered with the state in the last year (a state
+               filing, app/sources/filings.py) or possibly a new business (from its reviews) +20
     seo        missing page title / description +15, no LocalBusiness schema +10, no analytics
                and no Search Console +10, PageSpeed SEO < 80 +10, few Google reviews or photos
                +15, low in Google's results of a small search (> 10 +15, > 5 +8), reviews far
@@ -355,6 +356,18 @@ def _possibly_new(company: Company, review: dict, now: datetime | None = None) -
     return (now - oldest).days < NEW_BUSINESS_DAYS
 
 
+def _filed_recently(company: Company, now: datetime | None = None) -> str | None:
+    """'2026-11-21' when a state filing (app/sources/filings.py) registered the business less
+    than NEW_BUSINESS_DAYS ago, else None."""
+    filing = company.filing if isinstance(company.filing, dict) else {}
+    try:
+        filed = datetime.strptime(str(filing.get("filed") or ""), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return filing["filed"] if 0 <= (now - filed).days < NEW_BUSINESS_DAYS else None
+
+
 def _known_established(company: Company, signals: dict) -> bool:
     """Facts that prove the business is not new, whatever its few Google reviews suggest:
     a founding year or copyright at least ESTABLISHED_YEARS ago, or a 2020-21 PPP loan."""
@@ -420,8 +433,12 @@ def _website_points(company: Company, signals: dict, speed: dict, review: dict) 
     if platform in DIY_PLATFORMS or (company.website and domain.endswith(DIY_DOMAIN_SUFFIXES)):
         name = signals.get("platform") or "free builder"
         points.append((f"DIY website builder ({name})", WEBSITE_DIY_BUILDER))
-    if _possibly_new(company, review) and not _known_established(company, signals):
-        points.append(("Possibly a new business", WEBSITE_NEW_BUSINESS))
+    if not _known_established(company, signals):
+        filed = _filed_recently(company)
+        if filed:
+            points.append((f"New business (registered with the state {filed})", WEBSITE_NEW_BUSINESS))
+        elif _possibly_new(company, review):
+            points.append(("Possibly a new business", WEBSITE_NEW_BUSINESS))
     return points
 
 

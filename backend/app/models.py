@@ -145,6 +145,9 @@ class Company(Base):
     # Better Business Bureau facts from a web search (app/bbb.py): {"found": True, "url": ...,
     # "accredited": True, "rating": "A+", "complaints": 3, ...} or {"found": False}; {} = not checked.
     bbb: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    # A state business filing (app/sources/filings.py): {"state": "CO", "filed": "2026-11-21",
+    # "entity_type": ..., "registry_id": ..., "people": [{"name", "role"}], ...}; {} = none.
+    filing: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     bbb_checked_at: Mapped[datetime | None]
     people_searched_at: Mapped[datetime | None]
     source: Mapped[str] = mapped_column(String(50))

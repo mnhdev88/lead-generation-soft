@@ -349,6 +349,10 @@ def merge_companies(session: Session, keep: Company, drop: Company, reason: str 
     elif crawl_rank(drop) > crawl_rank(keep) and drop.website == keep.website:
         take_drops_crawl()
 
+    # A state filing (app/sources/filings.py) is kept whichever copy had it.
+    if not keep.filing and drop.filing:
+        keep.filing = dict(drop.filing)
+
     # Your work on the lead: a status beyond "new" wins.
     if (keep.lead_status or "new") == "new" and (drop.lead_status or "new") != "new":
         keep.lead_status = drop.lead_status

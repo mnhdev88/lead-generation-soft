@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api, type Duplicates } from "@/lib/api";
 
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-const SOURCE_LABEL: Record<string, string> = { google: "Google", osm: "OpenStreetMap" };
+const SOURCE_LABEL: Record<string, string> = { google: "Google", osm: "OpenStreetMap", filings: "State filing" };
 
 /** Businesses and people saved twice: see them, then merge them all with one click. */
 export function DuplicatesSection() {

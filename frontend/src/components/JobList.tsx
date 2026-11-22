@@ -27,6 +27,7 @@ const STATUS_STYLE: Record<JobStatus, string> = {
 
 const SOURCE_LABEL: Record<string, string> = {
   osm: "OpenStreetMap",
+  filings: "New business filings",
   google: "Google Maps",
   crawler: "Website crawl",
   emails: "Email check",

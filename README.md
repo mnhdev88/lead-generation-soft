@@ -34,7 +34,8 @@ backend/                   Python + FastAPI
   app/auth.py              Passwords, sessions, lockouts;  app/create_user.py: make a login
   app/models.py            Database tables (companies, contacts, jobs, lists, email checks...)
   app/worker.py            Runs searches, website crawls and email checks in the background
-  app/sources/             Business sources: osm.py (OpenStreetMap), google_places.py
+  app/sources/             Business sources: osm.py (OpenStreetMap), google_places.py, filings.py (state filings)
+  app/bbb.py               BBB facts from web search results
   app/enrich/              Website crawler (emails, phones, socials, team members)
   app/emails/              Email checker (format, domain, mailbox) and email-pattern finder
   app/providers/hunter.py  Optional Hunter.io backup
@@ -65,6 +66,7 @@ frontend/                  Next.js dashboard
 - [x] **Step 5:** B2B people/company search + "Find decision-makers"
 - [x] **Step 6:** Lists, statuses, scoring, Google Sheets export
 - [x] Logins, users and security hardening
+- [x] Search by Google review count, BBB check, new business filings (CO, NY, CT, OR)
 - [ ] Later: outreach sequences, then SaaS (teams, billing)
 
 ## Logins & security
@@ -357,6 +359,33 @@ We never scrape LinkedIn (its terms forbid it, accounts get banned):
 
 A business is not looked up again for 90 days (`PEOPLE_RECHECK_DAYS`). Every person and business
 also has a **Find on LinkedIn** link, which opens LinkedIn's own search in your browser.
+
+## New business filings (CO, NY, CT, OR)
+
+Pick **New business filings** as the data source to find businesses **registered with the state
+recently**. They have no website, agency or reviews yet, so they are the best time to sell a website.
+It reads the states' own free open data (no key needed, `backend/app/sources/filings.py`):
+
+| State | Dataset | What it adds |
+|---|---|---|
+| Colorado | data.colorado.gov `4ykn-tg5h` | registered agent (often the owner) |
+| New York | data.ny.gov `n9v6-gdp6` | county, the person the state sends mail to |
+| Connecticut | data.ct.gov `n7gp-d28j` | **business email** and **industry** (NAICS) |
+| Oregon | data.oregon.gov `tckn-sxa6` | registered agent; the **owner** of a DBA (assumed business name) |
+
+- **Business types**: looked for in the business's name (Connecticut: also in its industry), e.g.
+  `cleaning`, `salon`, `roofing`. Type `all` for every kind.
+- **Places**: a state (`Colorado`) or a town in one (`Denver, CO`). Other states have no free data.
+- **Registered in the last … days** (default 30). The states update daily (Oregon weekly).
+- Left out: businesses formed in another state, nonprofits, and holding / property / investment
+  companies (by their name).
+- **Find each one on Google Maps** (on by default when Google Maps is set up): one Google request per
+  business, by its name and town. A match in the same state is merged with the filing, so the lead
+  gets the phone, website, rating and reviews. Those not found are kept (often too new for Google).
+- The people named in the filing are saved (title "Registered agent", "Owner"...); the panel shows a
+  **State filing** section. A filing from the last year adds "New business (registered with the
+  state …) +20" to the Website intent score.
+- Optional `SOCRATA_APP_TOKEN` in `backend/.env` (free) raises the portals' rate limits.
 
 ## BBB (Better Business Bureau)
 

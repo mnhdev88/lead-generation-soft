@@ -50,6 +50,9 @@ export function SearchForm({
   // Google review count range ("" = no limit). Google Maps only: OpenStreetMap has no reviews.
   const [minReviews, setMinReviews] = useState("");
   const [maxReviews, setMaxReviews] = useState("");
+  // New business filings: how many days back, and whether to find each one on Google Maps.
+  const [filedDays, setFiledDays] = useState(30);
+  const [matchGoogle, setMatchGoogle] = useState(true);
   const [picked, setPicked] = useState<string | null>(null); // null = use the default source
   const [sources, setSources] = useState<Source[]>(FALLBACK_SOURCES);
   const [usage, setUsage] = useState<Usage[]>([]);
@@ -83,6 +86,8 @@ export function SearchForm({
   const pickedSource = sources.find((s) => s.name === picked && s.available);
   const source = pickedSource ? pickedSource.name : fallback;
   const isGoogle = source === "google";
+  const isFilings = source === "filings";
+  const canMatchGoogle = google?.available === true;
   const googleUsage = usage.find((u) => u.provider === "google_places");
   // Hunter.io is an optional backup for finding emails. Its meter shows when a key is set, it
   // has a monthly cap and is relevant: already used this month, or "Find & verify emails" is ticked.
@@ -149,6 +154,7 @@ export function SearchForm({
         await api.createJobBatch({
           queries, locations, limit, source, enrich: crawl, find_emails: findEmails, offers,
           min_reviews: reviewMin, max_reviews: reviewMax,
+          ...(isFilings ? { filed_days: filedDays, match_google: matchGoogle && canMatchGoogle } : {}),
         }),
       );
       setTypes(queries);
@@ -216,7 +222,7 @@ export function SearchForm({
         <span className="label">Business types</span>
         <input
           className="input"
-          placeholder="e.g. dentist, gym"
+          placeholder={isFilings ? "e.g. cleaning, salon, roofing, or all" : "e.g. dentist, gym"}
           value={typeDraft}
           onChange={(e) => {
             // A comma finishes a type: "dentist, " becomes a chip.
@@ -272,7 +278,11 @@ export function SearchForm({
         <textarea
           className="input resize-y"
           rows={Math.min(Math.max(3, placesText.split("\n").length), 10)} // grows with the list
-          placeholder={"Karachi, Pakistan\nAustin, Texas\nor paste a list of cities"}
+          placeholder={
+            isFilings
+              ? "Denver, CO\nNew York\n(Colorado, New York, Connecticut or Oregon)"
+              : "Karachi, Pakistan\nAustin, Texas\nor paste a list of cities"
+          }
           value={placesText}
           onChange={(e) => {
             setPlacesText(e.target.value);
@@ -368,6 +378,45 @@ export function SearchForm({
             </span>
           )}
         </p>
+      )}
+
+      {isFilings && (
+        <fieldset className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+          <legend className="label px-1">New business filings</legend>
+          <p className="text-xs text-[var(--muted)]">
+            Businesses registered with the state recently: Colorado, New York, Connecticut and Oregon (free official
+            data). The business type is looked for in their name (Connecticut: also their industry); &quot;all&quot; = every
+            kind. Holding, property and investment companies are left out.
+          </p>
+          <label className="block space-y-1">
+            <span className="label">Registered in the last … days</span>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={365}
+              value={filedDays}
+              onChange={(e) => setFiledDays(Math.min(365, Math.max(1, Number(e.target.value) || 1)))}
+            />
+          </label>
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={matchGoogle && canMatchGoogle}
+              disabled={!canMatchGoogle}
+              onChange={(e) => setMatchGoogle(e.target.checked)}
+            />
+            <span>
+              Find each one on Google Maps
+              <span className="block text-xs text-[var(--muted)]">
+                {canMatchGoogle
+                  ? `A filing has no phone or website. This looks each business up on Google Maps (1 request each, up to ${(limit * Math.max(searches, 1)).toLocaleString()}) and adds its phone, website and reviews. The ones not found are kept: they're too new for Google.`
+                  : "Needs Google Maps (GOOGLE_PLACES_API_KEY in backend/.env). Without it you get the names, addresses and owners only."}
+              </span>
+            </span>
+          </label>
+        </fieldset>
       )}
 
       {isGoogle && (

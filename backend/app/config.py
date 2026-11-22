@@ -84,6 +84,9 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "").strip()
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 # Hard cap on web searches per calendar month (1 or 2 searches per company looked up).
 WEB_SEARCH_MONTHLY_LIMIT = int(os.getenv("WEB_SEARCH_MONTHLY_LIMIT", "900"))
+# New business filings (app/sources/filings.py): state open-data portals work without a key;
+# a free Socrata app token (any of the portals, "Developer settings") raises their rate limit.
+SOCRATA_APP_TOKEN = os.getenv("SOCRATA_APP_TOKEN", "").strip()
 # Apollo.io (optional backup when the web search finds no one). Empty key = Apollo off.
 # Searching Apollo's people is free; revealing one person's email costs 1 credit.
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "").strip()
